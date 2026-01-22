@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Description: List and run scripts with their descriptions
+set -euo pipefail
+
+SCRIPTS_DIR="${SCRIPTS_DIR:-$HOME/scripts}"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  scripts.list [--list | -l]
+
+Examples:
+  scripts.list           # interactive selection and run
+  scripts.list --list    # just list scripts with descriptions
+
+Notes:
+  - Displays all scripts with their descriptions
+  - Select a script to run it (requires fzf)
+  - Descriptions are read from "# Description:" comments
+EOF
+}
+
+get_description() {
+  local script="$1"
+  grep -m1 "^# Description:" "$script" 2>/dev/null | sed 's/^# Description: *//' || echo "(no description)"
+}
+
+list_scripts() {
+  for script in "$SCRIPTS_DIR"/*; do
+    [[ -f "$script" ]] || continue
+    [[ -x "$script" ]] || continue
+    [[ "$(basename "$script")" == "scripts.list" ]] && continue
+
+    local name=$(basename "$script")
+    local desc=$(get_description "$script")
+    printf "%-20s %s\n" "$name" "$desc"
+  done
+}
+
+if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ ${1:-} == "-l" || ${1:-} == "--list" ]]; then
+  list_scripts
+  exit 0
+fi
+
+# Interactive mode with fzf
+if ! command -v fzf >/dev/null 2>&1; then
+  echo "error: fzf is required for interactive selection. Install with: brew install fzf" >&2
+  echo "Use --list to just list scripts without fzf" >&2
+  exit 127
+fi
+
+# Build list with descriptions for fzf
+selection=$(list_scripts | fzf --prompt="Select script: " --height=~50% --reverse --preview="cat $SCRIPTS_DIR/{1}" --preview-window=right:50%:wrap) || {
+  echo "No script selected" >&2
+  exit 1
+}
+
+# Extract script name (first column)
+script_name=$(echo "$selection" | awk '{print $1}')
+script_path="$SCRIPTS_DIR/$script_name"
+
+if [[ ! -x "$script_path" ]]; then
+  echo "error: script not found or not executable: $script_path" >&2
+  exit 2
+fi
+
+echo "Running: $script_name" >&2
+echo "---" >&2
+exec "$script_path"
