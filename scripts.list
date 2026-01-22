@@ -55,7 +55,7 @@ if ! command -v fzf >/dev/null 2>&1; then
 fi
 
 # Build list with descriptions for fzf
-selection=$(list_scripts | fzf --prompt="Select script: " --height=~50% --reverse --preview="cat $SCRIPTS_DIR/{1}" --preview-window=right:50%:wrap) || {
+selection=$(list_scripts | fzf --prompt="Select script: " --height=~50% --reverse) || {
   echo "No script selected" >&2
   exit 1
 }
