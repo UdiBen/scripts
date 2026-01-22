@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Description: Generate a token and update restish config with bearer authorization
+set -euo pipefail
+
+RESTISH_CONFIG="$HOME/Library/Application Support/restish/apis.json"
+SCRIPT_DIR="$(dirname "$0")"
+PORT_FORWARD_CMD="kubectl port-forward svc/control-plane-admin-service 9999:80 -n control-plane"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  restish.prepare [component]
+
+Examples:
+  restish.prepare           # interactive component selection
+  restish.prepare admin     # use admin component
+
+Notes:
+  - Generates a superadmin token using generate.token
+  - Updates the restish config with the bearer token for the 'admin' API
+  - Starts port-forwarding in a new terminal tab
+EOF
+}
+
+if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+# Check for jq
+if ! command -v jq >/dev/null 2>&1; then
+  echo "error: jq is required. Install with: brew install jq" >&2
+  exit 127
+fi
+
+# Check restish config exists
+if [[ ! -f "$RESTISH_CONFIG" ]]; then
+  echo "error: restish config not found at $RESTISH_CONFIG" >&2
+  exit 1
+fi
+
+# Generate token
+echo "Generating token..." >&2
+TOKEN=$("$SCRIPT_DIR/generate.token" "$@") || {
+  echo "error: failed to generate token" >&2
+  exit 2
+}
+
+if [[ -z "$TOKEN" ]]; then
+  echo "error: empty token received" >&2
+  exit 3
+fi
+
+echo "Updating restish config..." >&2
+
+# Update the authorization header in the config
+jq --arg token "Bearer $TOKEN" '.admin.profiles.default.headers.authorization = $token' "$RESTISH_CONFIG" > "$RESTISH_CONFIG.tmp" && \
+  mv "$RESTISH_CONFIG.tmp" "$RESTISH_CONFIG"
+
+# Clear restish cache to ensure new config is used
+echo "Clearing restish cache..." >&2
+rm -rf "$HOME/Library/Caches/restish/"*
+
+# Start port-forwarding in a new terminal tab
+echo "Starting port-forward in new terminal tab..." >&2
+
+if [[ -d "/Applications/iTerm.app" ]]; then
+  osascript <<EOF
+    tell application "iTerm"
+      activate
+      if (count of windows) = 0 then
+        create window with default profile
+      else
+        tell current window
+          create tab with default profile
+        end tell
+      end if
+      tell current session of current window
+        write text "$PORT_FORWARD_CMD"
+      end tell
+    end tell
+EOF
+elif [[ -d "/Applications/Terminal.app" ]]; then
+  osascript <<EOF
+    tell application "Terminal"
+      activate
+      do script "$PORT_FORWARD_CMD"
+    end tell
+EOF
+else
+  echo "warning: could not open terminal, run manually: $PORT_FORWARD_CMD" >&2
+fi
+
+echo "Done. You can now use: restish admin <command>" >&2

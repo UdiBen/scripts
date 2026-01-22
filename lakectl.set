@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Description: Set active lakectl configuration profile
+set -euo pipefail
+
+CONFIG_DIR="${HOME}/code/treeverse/config"
+
+usage() {
+  echo "Usage: lakectl-set [profile]" >&2
+  echo "       lakectl-set --list" >&2
+  echo "Example: lakectl-set dev" >&2
+  echo "If no profile is provided, an interactive selector will be shown (requires fzf)." >&2
+}
+
+list_profiles() {
+  echo "Available profiles:"
+  for f in "$CONFIG_DIR"/*.yaml; do
+    [[ -f "$f" ]] || continue
+    basename "$f" .yaml
+  done
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ "${1:-}" == "--list" || "${1:-}" == "-l" ]]; then
+  list_profiles
+  exit 0
+fi
+
+if [[ -n "${1:-}" ]]; then
+  profile="$1"
+else
+  # Interactive profile selection with fzf
+  if ! command -v fzf >/dev/null 2>&1; then
+    echo "error: fzf is required for interactive selection. Install with: brew install fzf" >&2
+    exit 127
+  fi
+
+  profiles=""
+  for f in "$CONFIG_DIR"/*.yaml; do
+    [[ -f "$f" ]] || continue
+    profiles+="$(basename "$f" .yaml)"$'\n'
+  done
+  profiles="${profiles%$'\n'}"  # remove trailing newline
+
+  if [[ -z "$profiles" ]]; then
+    echo "error: no profiles found in $CONFIG_DIR" >&2
+    exit 1
+  fi
+
+  profile=$(echo "$profiles" | fzf --prompt="Select lakectl profile: " --height=~50% --reverse) || {
+    echo "error: no profile selected" >&2
+    exit 1
+  }
+fi
+src="${CONFIG_DIR}/${profile}.yaml"
+dst="${HOME}/.lakectl.yaml"
+
+if [[ ! -f "$src" ]]; then
+  echo "Error: config not found: $src" >&2
+  exit 2
+fi
+
+cp -f "$src" "$dst"
+echo "Set lakectl config: $dst <- $src"
