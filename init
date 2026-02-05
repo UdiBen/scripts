@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# Description: Install all missing dependencies for the scripts collection
+set -euo pipefail
+
+COLOR_GREEN='\033[0;32m'
+COLOR_YELLOW='\033[1;33m'
+COLOR_RED='\033[0;31m'
+COLOR_BLUE='\033[0;34m'
+COLOR_RESET='\033[0m'
+
+echo -e "${COLOR_BLUE}======================================${COLOR_RESET}"
+echo -e "${COLOR_BLUE}Scripts Collection - Dependency Check${COLOR_RESET}"
+echo -e "${COLOR_BLUE}======================================${COLOR_RESET}"
+echo ""
+
+# Track what needs to be installed
+MISSING_REQUIRED=()
+MISSING_OPTIONAL=()
+INSTALLED=()
+ALREADY_PRESENT=()
+
+# Check if command exists
+check_command() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+# Check and record tool status
+check_tool() {
+  local tool="$1"
+  local is_required="$2"
+  local brew_package="${3:-$tool}"
+
+  if check_command "$tool"; then
+    ALREADY_PRESENT+=("$tool")
+    echo -e "${COLOR_GREEN}✓${COLOR_RESET} $tool"
+  else
+    if [[ "$is_required" == "required" ]]; then
+      MISSING_REQUIRED+=("$brew_package")
+      echo -e "${COLOR_RED}✗${COLOR_RESET} $tool (required)"
+    else
+      MISSING_OPTIONAL+=("$brew_package")
+      echo -e "${COLOR_YELLOW}○${COLOR_RESET} $tool (optional)"
+    fi
+  fi
+}
+
+# Check Homebrew first
+echo "Checking Homebrew..."
+if ! check_command brew; then
+  echo -e "${COLOR_YELLOW}Homebrew not found. Installing...${COLOR_RESET}"
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+  # Add Homebrew to PATH for this script
+  if [[ -f "/opt/homebrew/bin/brew" ]]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+  elif [[ -f "/usr/local/bin/brew" ]]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+  fi
+
+  if check_command brew; then
+    echo -e "${COLOR_GREEN}✓ Homebrew installed${COLOR_RESET}"
+    INSTALLED+=("homebrew")
+  else
+    echo -e "${COLOR_RED}✗ Failed to install Homebrew${COLOR_RESET}"
+    exit 1
+  fi
+else
+  echo -e "${COLOR_GREEN}✓${COLOR_RESET} brew"
+  ALREADY_PRESENT+=("brew")
+fi
+
+echo ""
+echo "Checking dependencies..."
+echo ""
+
+# Required tools
+echo "Required Tools:"
+check_tool "fzf" "required"
+check_tool "jq" "required"
+
+echo ""
+echo "Optional Tools:"
+check_tool "bat" "optional"
+check_tool "aws" "optional" "awscli"
+check_tool "saml2aws" "optional"
+check_tool "kubectl" "optional"
+check_tool "restish" "optional"
+check_tool "go" "optional"
+
+echo ""
+echo -e "${COLOR_BLUE}======================================${COLOR_RESET}"
+echo -e "${COLOR_BLUE}Installation Summary${COLOR_RESET}"
+echo -e "${COLOR_BLUE}======================================${COLOR_RESET}"
+echo ""
+
+# Show what's already installed
+if [[ ${#ALREADY_PRESENT[@]} -gt 0 ]]; then
+  echo -e "${COLOR_GREEN}Already installed (${#ALREADY_PRESENT[@]}):${COLOR_RESET}"
+  for tool in "${ALREADY_PRESENT[@]}"; do
+    echo "  - $tool"
+  done
+  echo ""
+fi
+
+# Install missing required tools
+if [[ ${#MISSING_REQUIRED[@]} -gt 0 ]]; then
+  echo -e "${COLOR_RED}Missing required tools (${#MISSING_REQUIRED[@]}):${COLOR_RESET}"
+  for tool in "${MISSING_REQUIRED[@]}"; do
+    echo "  - $tool"
+  done
+  echo ""
+  echo -e "${COLOR_YELLOW}Installing required tools...${COLOR_RESET}"
+  echo ""
+
+  for tool in "${MISSING_REQUIRED[@]}"; do
+    echo -e "Installing ${COLOR_BLUE}$tool${COLOR_RESET}..."
+    if brew install "$tool"; then
+      INSTALLED+=("$tool")
+      echo -e "${COLOR_GREEN}✓ $tool installed${COLOR_RESET}"
+    else
+      echo -e "${COLOR_RED}✗ Failed to install $tool${COLOR_RESET}"
+    fi
+    echo ""
+  done
+fi
+
+# Install missing optional tools
+if [[ ${#MISSING_OPTIONAL[@]} -gt 0 ]]; then
+  echo -e "${COLOR_YELLOW}Missing optional tools (${#MISSING_OPTIONAL[@]}):${COLOR_RESET}"
+  for tool in "${MISSING_OPTIONAL[@]}"; do
+    echo "  - $tool"
+  done
+  echo ""
+  echo -e "${COLOR_YELLOW}Installing optional tools...${COLOR_RESET}"
+  echo ""
+
+  for tool in "${MISSING_OPTIONAL[@]}"; do
+    echo -e "Installing ${COLOR_BLUE}$tool${COLOR_RESET}..."
+    if brew install "$tool"; then
+      INSTALLED+=("$tool")
+      echo -e "${COLOR_GREEN}✓ $tool installed${COLOR_RESET}"
+    else
+      echo -e "${COLOR_YELLOW}⚠ Failed to install $tool (optional - skipping)${COLOR_RESET}"
+    fi
+    echo ""
+  done
+fi
+
+# Final summary
+echo ""
+echo -e "${COLOR_BLUE}======================================${COLOR_RESET}"
+echo -e "${COLOR_BLUE}Setup Complete${COLOR_RESET}"
+echo -e "${COLOR_BLUE}======================================${COLOR_RESET}"
+echo ""
+
+if [[ ${#INSTALLED[@]} -gt 0 ]]; then
+  echo -e "${COLOR_GREEN}Newly installed (${#INSTALLED[@]}):${COLOR_RESET}"
+  for tool in "${INSTALLED[@]}"; do
+    echo "  - $tool"
+  done
+  echo ""
+fi
+
+echo -e "${COLOR_GREEN}All required dependencies are installed!${COLOR_RESET}"
+echo ""
+echo "You can now use the scripts collection:"
+echo "  ./scripts.list          # Browse and run scripts"
+echo "  ./scripts.list --list   # List all available scripts"
+echo ""
+echo "See README.md for detailed usage information."
