@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Description: Display lakectl config with syntax highlighting
+
+set -euo pipefail
+
+LAKECTL_CONFIG="$HOME/.lakectl.yaml"
+
+# Try bat first, fallback to cat
+if command -v bat >/dev/null 2>&1; then
+  exec bat --language=yaml --style=numbers,grid "$LAKECTL_CONFIG"
+else
+  exec cat "$LAKECTL_CONFIG"
+fi
