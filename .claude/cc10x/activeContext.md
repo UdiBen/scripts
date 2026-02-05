@@ -24,7 +24,7 @@ Creating README.md and init script for the scripts repository
 
 ## References
 - Plan: N/A
-- Design: docs/plans/2026-02-05-lakectl-cat-design.md
+- Design: N/A
 - Research: N/A
 
 ## Blockers

@@ -11,8 +11,8 @@
 
 ## File Structure
 - Scripts in root directory
-- Design docs in `docs/plans/`
 - All scripts follow pattern: `category.action` naming
+- ctl/ directory contains Go-based utilities
 
 ## Testing Patterns
 - Manual testing via direct execution

@@ -241,11 +241,9 @@ Create config files in `~/code/treeverse/config/` or adjust `CONFIG_DIR` in `lak
 ├── lakectl.cat            # lakeFS config viewer
 ├── generate.token         # Token generation
 ├── restish.prepare        # REST API setup
-├── ctl/                   # Go-based utilities
-│   ├── Makefile
-│   ├── README.md
-│   ├── cmd/
-│   ├── go.mod
-│   └── scriptctl          # Compiled binary
-└── docs/
-    └── plans/             # Design documentation
+└── ctl/                   # Go-based utilities
+    ├── Makefile
+    ├── README.md
+    ├── cmd/
+    ├── go.mod
+    └── scriptctl          # Compiled binary
