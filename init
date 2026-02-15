@@ -86,6 +86,7 @@ check_tool "saml2aws" "optional"
 check_tool "kubectl" "optional"
 check_tool "restish" "optional"
 check_tool "go" "optional"
+check_tool "authenticator" "optional"
 
 echo ""
 echo -e "${COLOR_BLUE}======================================${COLOR_RESET}"

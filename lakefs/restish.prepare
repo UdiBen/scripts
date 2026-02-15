@@ -3,7 +3,6 @@
 set -euo pipefail
 
 RESTISH_CONFIG="$HOME/Library/Application Support/restish/apis.json"
-SCRIPT_DIR="$(dirname "$0")"
 API_DIR="$HOME/code/treeverse/cloud-controlplane/service/api"
 
 # Service definitions
@@ -82,7 +81,7 @@ done
 # Generate tokens
 echo "Generating tokens..." >&2
 
-ADMIN_TOKEN=$("$SCRIPT_DIR/create.api.token" superadmin) || {
+ADMIN_TOKEN=$(create.api.token superadmin) || {
   echo "error: failed to generate admin token" >&2
   exit 2
 }
@@ -110,7 +109,7 @@ fi
 
 if [[ -n "$ORG_ID" ]]; then
   echo "Org ID: $ORG_ID" >&2
-  GIAM_TOKEN=$("$SCRIPT_DIR/create.api.token" lakefs "$ORG_ID") || {
+  GIAM_TOKEN=$(create.api.token lakefs "$ORG_ID") || {
     echo "error: failed to generate giam token" >&2
     exit 2
   }

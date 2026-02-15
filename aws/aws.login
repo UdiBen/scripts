@@ -77,10 +77,9 @@ if ! command -v saml2aws >/dev/null 2>&1; then
 fi
 
 # Generate TOTP token automatically if possible
-SCRIPT_DIR="$(dirname "$0")"
 mfa_token=""
-if [[ -x "$SCRIPT_DIR/generate.mfa.token" ]]; then
-  mfa_token=$("$SCRIPT_DIR/generate.mfa.token" 2>/dev/null) || true
+if command -v generate.mfa.token >/dev/null 2>&1; then
+  mfa_token=$(generate.mfa.token 2>/dev/null) || true
 fi
 
 cmd=(saml2aws -a "$profile")

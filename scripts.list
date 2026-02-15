@@ -4,18 +4,24 @@ set -euo pipefail
 
 SCRIPTS_DIR="${SCRIPTS_DIR:-$HOME/scripts}"
 
+# Known categories (subdirectories)
+CATEGORIES=(aws lakefs common)
+
+# Scripts that live at the root level
+ROOT_SCRIPTS=(init)
+
 usage() {
   cat >&2 <<'EOF'
 Usage:
   scripts.list [--list | -l]
 
 Examples:
-  scripts.list           # interactive selection and run
-  scripts.list --list    # just list scripts with descriptions
+  scripts.list           # interactive selection with scripts grouped by category
+  scripts.list --list    # list all scripts grouped by category
 
 Notes:
   - Displays all scripts with their descriptions
-  - Select a script to run it (requires fzf)
+  - Scripts are grouped by category (requires fzf)
   - Descriptions are read from "# Description:" comments
 EOF
 }
@@ -25,15 +31,72 @@ get_description() {
   grep -m1 "^# Description:" "$script" 2>/dev/null | sed 's/^# Description: *//' || echo "(no description)"
 }
 
-list_scripts() {
-  for script in "$SCRIPTS_DIR"/*; do
+# List scripts in a directory, one per line: "name  description"
+list_dir_scripts() {
+  local dir="$1"
+  for script in "$dir"/*; do
     [[ -f "$script" ]] || continue
     [[ -x "$script" ]] || continue
-    [[ "$(basename "$script")" == "scripts.list" ]] && continue
+    local name
+    name=$(basename "$script")
+    local desc
+    desc=$(get_description "$script")
+    printf "%-24s %s\n" "$name" "$desc"
+  done
+}
 
-    local name=$(basename "$script")
-    local desc=$(get_description "$script")
-    printf "%-20s %s\n" "$name" "$desc"
+list_all() {
+  for category in "${CATEGORIES[@]}"; do
+    local dir="$SCRIPTS_DIR/$category"
+    [[ -d "$dir" ]] || continue
+    local scripts
+    scripts=$(list_dir_scripts "$dir")
+    [[ -z "$scripts" ]] && continue
+    printf "\033[1;34m%s\033[0m\n" "$category"
+    echo "$scripts"
+    echo ""
+  done
+
+  # Root-level scripts
+  local has_root=false
+  for name in "${ROOT_SCRIPTS[@]}"; do
+    local path="$SCRIPTS_DIR/$name"
+    if [[ -x "$path" ]]; then
+      if [[ "$has_root" == false ]]; then
+        printf "\033[1;34m%s\033[0m\n" "general"
+        has_root=true
+      fi
+      local desc
+      desc=$(get_description "$path")
+      printf "%-24s %s\n" "$name" "$desc"
+    fi
+  done
+  if [[ "$has_root" == true ]]; then
+    echo ""
+  fi
+}
+
+# Build fzf list: "category/name  description" with category headers
+build_fzf_list() {
+  for category in "${CATEGORIES[@]}"; do
+    dir="$SCRIPTS_DIR/$category"
+    [[ -d "$dir" ]] || continue
+    for script in "$dir"/*; do
+      [[ -f "$script" ]] || continue
+      [[ -x "$script" ]] || continue
+      name=$(basename "$script")
+      desc=$(get_description "$script")
+      printf "%-10s %-24s %s\n" "$category" "$name" "$desc"
+    done
+  done
+
+  # Root-level scripts
+  for name in "${ROOT_SCRIPTS[@]}"; do
+    path="$SCRIPTS_DIR/$name"
+    if [[ -x "$path" ]]; then
+      desc=$(get_description "$path")
+      printf "%-10s %-24s %s\n" "general" "$name" "$desc"
+    fi
   done
 }
 
@@ -43,7 +106,7 @@ if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
 fi
 
 if [[ ${1:-} == "-l" || ${1:-} == "--list" ]]; then
-  list_scripts
+  list_all
   exit 0
 fi
 
@@ -54,21 +117,26 @@ if ! command -v fzf >/dev/null 2>&1; then
   exit 127
 fi
 
-# Build list with descriptions for fzf
-selection=$(list_scripts | fzf --prompt="Select script: " --height=~50% --reverse) || {
+# Single fzf with all scripts, grouped by category
+selection=$(build_fzf_list | fzf --prompt="Select script: " --height=~50% --reverse) || {
   echo "No script selected" >&2
   exit 1
 }
 
-# Extract script name (first column)
-script_name=$(echo "$selection" | awk '{print $1}')
-script_path="$SCRIPTS_DIR/$script_name"
+category=$(echo "$selection" | awk '{print $1}')
+script_name=$(echo "$selection" | awk '{print $2}')
+
+if [[ "$category" == "general" ]]; then
+  script_path="$SCRIPTS_DIR/$script_name"
+else
+  script_path="$SCRIPTS_DIR/$category/$script_name"
+fi
 
 if [[ ! -x "$script_path" ]]; then
   echo "error: script not found or not executable: $script_path" >&2
   exit 2
 fi
 
-echo "Running: $script_name" >&2
+echo "Running: $category/$script_name" >&2
 echo "---" >&2
 exec "$script_path"
