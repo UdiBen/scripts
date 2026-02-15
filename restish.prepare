@@ -1,24 +1,30 @@
 #!/usr/bin/env bash
-# Description: Generate a token and update restish config with bearer authorization
+# Description: Set up restish for admin and giam APIs with tokens and port-forwarding
 set -euo pipefail
 
 RESTISH_CONFIG="$HOME/Library/Application Support/restish/apis.json"
 SCRIPT_DIR="$(dirname "$0")"
-PORT_FORWARD_CMD="kubectl port-forward svc/control-plane-admin-service 9999:80 -n control-plane"
+API_DIR="$HOME/code/treeverse/cloud-controlplane/service/api"
+
+# Service definitions
+ADMIN_SVC=control-plane-admin-service
+ADMIN_PORT=8087
+ADMIN_SPEC="$API_DIR/admin.yml"
+
+GIAM_SVC=control-plane-giam-service
+GIAM_PORT=8085
+GIAM_SPEC="$API_DIR/authorization.yml"
 
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  restish.prepare [component]
-
-Examples:
-  restish.prepare           # interactive component selection
-  restish.prepare admin     # use admin component
+  restish.prepare
 
 Notes:
-  - Generates a superadmin token using generate.token
-  - Updates the restish config with the bearer token for the 'admin' API
-  - Starts port-forwarding in a new terminal tab
+  - Detects the control-plane namespace from the current kubectl context
+  - Starts port-forwarding for admin and giam services
+  - Generates tokens for admin (superadmin) and giam (lakefs)
+  - Updates restish config with localhost base URLs and bearer tokens
 EOF
 }
 
@@ -33,62 +39,136 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 127
 fi
 
-# Check restish config exists
-if [[ ! -f "$RESTISH_CONFIG" ]]; then
-  echo "error: restish config not found at $RESTISH_CONFIG" >&2
-  exit 1
+# Detect namespace
+NAMESPACE=$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep control-plane | head -1) || true
+if [[ -z "$NAMESPACE" ]]; then
+  echo "error: no control-plane namespace found in current kubectl context" >&2
+  exit 2
 fi
+echo "Namespace: $NAMESPACE" >&2
 
-# Generate token
-echo "Generating token..." >&2
-TOKEN=$("$SCRIPT_DIR/generate.token" "$@") || {
-  echo "error: failed to generate token" >&2
+# Start port-forwarding first
+echo "Starting port-forwards..." >&2
+
+start_port_forward() {
+  local svc="$1" port="$2"
+
+  # Kill existing process on this port
+  if lsof -ti :"$port" >/dev/null 2>&1; then
+    kill $(lsof -ti :"$port") 2>/dev/null
+    sleep 0.5
+  fi
+
+  kubectl port-forward "svc/$svc" "$port:80" -n "$NAMESPACE" >/dev/null 2>&1 &
+  echo "  $svc -> localhost:$port (pid $!)" >&2
+}
+
+start_port_forward "$ADMIN_SVC" "$ADMIN_PORT"
+start_port_forward "$GIAM_SVC" "$GIAM_PORT"
+
+# Wait for admin to be ready
+echo "Waiting for admin service..." >&2
+for i in $(seq 1 15); do
+  if curl -sf "http://localhost:${ADMIN_PORT}/_health" >/dev/null 2>&1; then
+    break
+  fi
+  if [[ $i -eq 15 ]]; then
+    echo "error: admin service not ready after 15s" >&2
+    exit 3
+  fi
+  sleep 1
+done
+
+# Generate tokens
+echo "Generating tokens..." >&2
+
+ADMIN_TOKEN=$("$SCRIPT_DIR/create.api.token" superadmin) || {
+  echo "error: failed to generate admin token" >&2
   exit 2
 }
 
-if [[ -z "$TOKEN" ]]; then
-  echo "error: empty token received" >&2
-  exit 3
+# Fetch org ID from admin service
+ORGS_JSON=$(curl -s "http://localhost:${ADMIN_PORT}/api/v1/internal/admin/organizations_v2" \
+  -H "Authorization: Bearer $ADMIN_TOKEN") || true
+ORG_COUNT=$(echo "$ORGS_JSON" | jq -r '.results | length' 2>/dev/null) || true
+
+if [[ "${ORG_COUNT:-0}" -eq 1 ]]; then
+  ORG_ID=$(echo "$ORGS_JSON" | jq -r '.results[0].id')
+elif [[ "${ORG_COUNT:-0}" -gt 1 ]]; then
+  if ! command -v fzf >/dev/null 2>&1; then
+    echo "error: fzf is required for org selection. Install with: brew install fzf" >&2
+    exit 127
+  fi
+  ORG_ID=$(echo "$ORGS_JSON" | jq -r '.results[] | "\(.id)\t\(.name)"' | \
+    fzf --prompt="Select organization: " --height=~50% --reverse | cut -f1) || {
+    echo "error: no organization selected" >&2
+    exit 1
+  }
+else
+  ORG_ID=""
 fi
 
+if [[ -n "$ORG_ID" ]]; then
+  echo "Org ID: $ORG_ID" >&2
+  GIAM_TOKEN=$("$SCRIPT_DIR/create.api.token" lakefs "$ORG_ID") || {
+    echo "error: failed to generate giam token" >&2
+    exit 2
+  }
+else
+  echo "warning: no organizations found - giam token will use a placeholder" >&2
+  GIAM_TOKEN=""
+fi
+
+# Build restish config
 echo "Updating restish config..." >&2
 
-# Update the authorization header in the config
-jq --arg token "Bearer $TOKEN" '.admin.profiles.default.headers.authorization = $token' "$RESTISH_CONFIG" > "$RESTISH_CONFIG.tmp" && \
-  mv "$RESTISH_CONFIG.tmp" "$RESTISH_CONFIG"
+CONFIG=$(jq -n \
+  --arg admin_token "Bearer $ADMIN_TOKEN" \
+  --arg admin_spec "$ADMIN_SPEC" \
+  --arg admin_base "http://localhost:${ADMIN_PORT}/api/v1" \
+  --arg giam_token "Bearer ${GIAM_TOKEN:-placeholder}" \
+  --arg giam_spec "$GIAM_SPEC" \
+  --arg giam_base "http://localhost:${GIAM_PORT}/api/v1" \
+  --arg schema "https://rest.sh/schemas/apis.json" \
+  '{
+    "$schema": $schema,
+    "admin": {
+      "base": $admin_base,
+      "spec_files": [$admin_spec],
+      "profiles": {
+        "default": {
+          "headers": { "authorization": $admin_token },
+          "auth": { "name": "" }
+        }
+      }
+    },
+    "giam": {
+      "base": $giam_base,
+      "spec_files": [$giam_spec],
+      "profiles": {
+        "default": {
+          "headers": { "authorization": $giam_token },
+          "auth": { "name": "" }
+        }
+      }
+    }
+  }')
 
-# Clear restish cache to ensure new config is used
+# Preserve any existing entries (like lakefs) and merge
+if [[ -f "$RESTISH_CONFIG" ]]; then
+  EXISTING=$(cat "$RESTISH_CONFIG")
+  CONFIG=$(echo "$EXISTING" | jq --argjson new "$CONFIG" '. * $new')
+fi
+
+echo "$CONFIG" > "$RESTISH_CONFIG"
+
+# Clear restish cache
 echo "Clearing restish cache..." >&2
 rm -rf "$HOME/Library/Caches/restish/"*
 
-# Start port-forwarding in a new terminal tab
-echo "Starting port-forward in new terminal tab..." >&2
-
-if [[ -d "/Applications/iTerm.app" ]]; then
-  osascript <<EOF
-    tell application "iTerm"
-      activate
-      if (count of windows) = 0 then
-        create window with default profile
-      else
-        tell current window
-          create tab with default profile
-        end tell
-      end if
-      tell current session of current window
-        write text "$PORT_FORWARD_CMD"
-      end tell
-    end tell
-EOF
-elif [[ -d "/Applications/Terminal.app" ]]; then
-  osascript <<EOF
-    tell application "Terminal"
-      activate
-      do script "$PORT_FORWARD_CMD"
-    end tell
-EOF
-else
-  echo "warning: could not open terminal, run manually: $PORT_FORWARD_CMD" >&2
+echo "" >&2
+echo "Done. Usage:" >&2
+echo "  restish admin list-organizations-v2-public" >&2
+if [[ -n "$ORG_ID" ]]; then
+  echo "  restish giam list-groups" >&2
 fi
-
-echo "Done. You can now use: restish admin <command>" >&2
