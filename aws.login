@@ -16,6 +16,7 @@ Notes:
   - This command prints shell export statements on stdout.
   - Use it with eval (or a shell function wrapper) to set the active profile in your current shell.
   - If no profile is provided, an interactive selector will be shown (requires fzf).
+  - TOTP MFA token is generated automatically via generate.mfa.token (if available).
 EOF
 }
 
@@ -75,9 +76,19 @@ if ! command -v saml2aws >/dev/null 2>&1; then
   exit 127
 fi
 
+# Generate TOTP token automatically if possible
+SCRIPT_DIR="$(dirname "$0")"
+mfa_token=""
+if [[ -x "$SCRIPT_DIR/generate.mfa.token" ]]; then
+  mfa_token=$("$SCRIPT_DIR/generate.mfa.token" 2>/dev/null) || true
+fi
+
 cmd=(saml2aws -a "$profile")
 if [[ -n "$region" ]]; then
   cmd+=(--region "$region")
+fi
+if [[ -n "$mfa_token" ]]; then
+  cmd+=(--mfa-token "$mfa_token")
 fi
 cmd+=(login --profile "$profile")
 
