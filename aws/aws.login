@@ -92,7 +92,20 @@ fi
 cmd+=(login --profile "$profile")
 
 # Keep stdout clean (so command substitution / eval only sees exports).
-"${cmd[@]}" 1>&2
+# Try with auto-generated token first; if it fails, retry without it (manual prompt)
+if ! "${cmd[@]}" 1>&2; then
+  if [[ -n "$mfa_token" ]]; then
+    echo "Auto MFA failed, retrying with manual prompt..." >&2
+    cmd=(saml2aws -a "$profile")
+    if [[ -n "$region" ]]; then
+      cmd+=(--region "$region")
+    fi
+    cmd+=(login --profile "$profile")
+    "${cmd[@]}" 1>&2
+  else
+    exit 1
+  fi
+fi
 
 printf 'export AWS_PROFILE=%q\n' "$profile"
 printf 'export AWS_DEFAULT_PROFILE=%q\n' "$profile"
