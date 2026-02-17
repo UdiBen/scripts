@@ -68,7 +68,7 @@ if [[ -z "$PROFILE" ]]; then
     exit 1
   fi
 
-  PROFILE=$(echo "$profiles" | fzf --prompt="Select AWS profile: " --height=~50% --reverse) || {
+  PROFILE=$(echo "$profiles" | fzf --exact --prompt="Select AWS profile: " --height=~50% --reverse) || {
     echo "error: no profile selected" >&2
     exit 1
   }
@@ -88,7 +88,7 @@ ap-southeast-1
 ap-southeast-2
 ap-northeast-1"
 
-  REGION=$(echo "$regions" | fzf --prompt="Select region: " --height=~50% --reverse) || {
+  REGION=$(echo "$regions" | fzf --exact --prompt="Select region: " --height=~50% --reverse) || {
     echo "error: no region selected" >&2
     exit 1
   }
@@ -108,7 +108,7 @@ if [[ -z "$CLUSTER" ]]; then
     exit 1
   fi
 
-  CLUSTER=$(echo "$clusters" | fzf --prompt="Select EKS cluster: " --height=~50% --reverse) || {
+  CLUSTER=$(echo "$clusters" | fzf --exact --prompt="Select EKS cluster: " --height=~50% --reverse) || {
     echo "error: no cluster selected" >&2
     exit 1
   }

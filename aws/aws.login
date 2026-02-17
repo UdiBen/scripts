@@ -46,7 +46,7 @@ else
     exit 1
   fi
 
-  profile=$(echo "$profiles" | fzf --prompt="Select AWS profile: " --height=~50% --reverse) || {
+  profile=$(echo "$profiles" | fzf --exact --prompt="Select AWS profile: " --height=~50% --reverse) || {
     echo "error: no profile selected" >&2
     exit 1
   }

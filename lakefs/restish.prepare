@@ -39,10 +39,20 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 # Detect namespace
-NAMESPACE=$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep control-plane | head -1) || true
-if [[ -z "$NAMESPACE" ]]; then
+CP_NAMESPACES=$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep control-plane) || true
+if [[ -z "$CP_NAMESPACES" ]]; then
   echo "error: no control-plane namespace found in current kubectl context" >&2
   exit 2
+fi
+
+NS_COUNT=$(echo "$CP_NAMESPACES" | wc -l | tr -d ' ')
+if [[ "$NS_COUNT" -eq 1 ]]; then
+  NAMESPACE="$CP_NAMESPACES"
+else
+  NAMESPACE=$(echo "$CP_NAMESPACES" | fzf --exact --prompt="Select namespace: " --height=~50% --reverse) || {
+    echo "error: no namespace selected" >&2
+    exit 1
+  }
 fi
 echo "Namespace: $NAMESPACE" >&2
 
@@ -81,13 +91,13 @@ done
 # Generate tokens
 echo "Generating tokens..." >&2
 
-ADMIN_TOKEN=$(create.api.token superadmin) || {
+ADMIN_TOKEN=$(CONTROLPLANE_NAMESPACE="$NAMESPACE" create.api.token superadmin) || {
   echo "error: failed to generate admin token" >&2
   exit 2
 }
 
 # Fetch org ID from admin service
-ORGS_JSON=$(curl -s "http://localhost:${ADMIN_PORT}/api/v1/internal/admin/organizations_v2" \
+ORGS_JSON=$(curl -s "http://localhost:${ADMIN_PORT}/api/v1/internal/admin/organizations_v2?includedisabled=true" \
   -H "Authorization: Bearer $ADMIN_TOKEN") || true
 ORG_COUNT=$(echo "$ORGS_JSON" | jq -r '.results | length' 2>/dev/null) || true
 
@@ -99,7 +109,7 @@ elif [[ "${ORG_COUNT:-0}" -gt 1 ]]; then
     exit 127
   fi
   ORG_ID=$(echo "$ORGS_JSON" | jq -r '.results[] | "\(.id)\t\(.name)"' | \
-    fzf --prompt="Select organization: " --height=~50% --reverse | cut -f1) || {
+    fzf --exact --prompt="Select organization: " --height=~50% --reverse | cut -f1) || {
     echo "error: no organization selected" >&2
     exit 1
   }
@@ -109,7 +119,7 @@ fi
 
 if [[ -n "$ORG_ID" ]]; then
   echo "Org ID: $ORG_ID" >&2
-  GIAM_TOKEN=$(create.api.token lakefs "$ORG_ID") || {
+  GIAM_TOKEN=$(CONTROLPLANE_NAMESPACE="$NAMESPACE" create.api.token lakefs "$ORG_ID") || {
     echo "error: failed to generate giam token" >&2
     exit 2
   }

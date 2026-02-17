@@ -118,7 +118,7 @@ if ! command -v fzf >/dev/null 2>&1; then
 fi
 
 # Single fzf with all scripts, grouped by category
-selection=$(build_fzf_list | fzf --prompt="Select script: " --height=~50% --reverse) || {
+selection=$(build_fzf_list | fzf --exact --prompt="Select script: " --height=~50% --reverse) || {
   echo "No script selected" >&2
   exit 1
 }
