@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# Description: Print logs of a Kubernetes pod (interactive selection, follow or dump)
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  kube.logs [options]
+
+Options:
+  -n, --namespace NS    Namespace to list pods from (default: interactive selection)
+  -l, --lines N         Number of lines to dump (default: 200)
+  -h, --help            Show this help
+
+Examples:
+  kube.logs                          # interactive namespace + pod + mode selection
+  kube.logs -n my-namespace          # skip namespace selection
+  kube.logs -n my-namespace -l 500   # dump last 500 lines
+
+Requires:
+  kubectl, fzf
+EOF
+}
+
+NAMESPACE=""
+LINES=200
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -n|--namespace)
+      NAMESPACE="$2"
+      shift 2
+      ;;
+    -l|--lines)
+      LINES="$2"
+      shift 2
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+# --- dependency checks ---
+
+if ! command -v kubectl >/dev/null 2>&1; then
+  echo "error: kubectl is required" >&2
+  exit 127
+fi
+
+if ! command -v fzf >/dev/null 2>&1; then
+  echo "error: fzf is required. Install with: brew install fzf" >&2
+  exit 127
+fi
+
+# --- namespace selection ---
+
+if [[ -z "$NAMESPACE" ]]; then
+  echo "Fetching namespaces..." >&2
+  NAMESPACES=$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n') || {
+    echo "error: failed to list namespaces. Is kubectl configured?" >&2
+    exit 3
+  }
+
+  NAMESPACE=$(echo "$NAMESPACES" | fzf --exact --prompt="Select namespace: " --height=~50% --reverse) || {
+    echo "error: no namespace selected" >&2
+    exit 1
+  }
+fi
+
+echo "Namespace: $NAMESPACE" >&2
+
+# --- pod selection ---
+
+echo "Fetching pods..." >&2
+PODS=$(kubectl get pods -n "$NAMESPACE" -o custom-columns=NAME:.metadata.name,STATUS:.status.phase,RESTARTS:.status.containerStatuses[0].restartCount,AGE:.metadata.creationTimestamp --no-headers 2>/dev/null) || {
+  echo "error: failed to list pods in namespace '$NAMESPACE'" >&2
+  exit 3
+}
+
+if [[ -z "$PODS" ]]; then
+  echo "error: no pods found in namespace '$NAMESPACE'" >&2
+  exit 1
+fi
+
+POD_LINE=$(echo "$PODS" | fzf --exact --prompt="Select pod: " --height=~50% --reverse) || {
+  echo "error: no pod selected" >&2
+  exit 1
+}
+
+POD=$(echo "$POD_LINE" | awk '{print $1}')
+echo "Pod: $POD" >&2
+
+# --- container selection (if multiple) ---
+
+CONTAINERS=$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.spec.containers[*].name}' | tr ' ' '\n')
+CONTAINER_COUNT=$(echo "$CONTAINERS" | wc -l | tr -d ' ')
+
+CONTAINER_FLAG=""
+if [[ "$CONTAINER_COUNT" -gt 1 ]]; then
+  CONTAINER=$(echo "$CONTAINERS" | fzf --exact --prompt="Select container: " --height=~50% --reverse) || {
+    echo "error: no container selected" >&2
+    exit 1
+  }
+  CONTAINER_FLAG="-c $CONTAINER"
+  echo "Container: $CONTAINER" >&2
+fi
+
+# --- mode selection ---
+
+MODE=$(printf "follow\ndump" | fzf --exact --prompt="Follow logs or dump last ${LINES} lines? " --height=~50% --reverse) || {
+  echo "error: no mode selected" >&2
+  exit 1
+}
+
+echo "" >&2
+
+if [[ "$MODE" == "follow" ]]; then
+  # shellcheck disable=SC2086
+  kubectl logs -f "$POD" -n "$NAMESPACE" $CONTAINER_FLAG
+else
+  # shellcheck disable=SC2086
+  kubectl logs --tail="$LINES" "$POD" -n "$NAMESPACE" $CONTAINER_FLAG
+fi

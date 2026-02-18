@@ -28,7 +28,7 @@ A curated collection of utility scripts for AWS, Kubernetes, lakeFS, and other d
 | **bat** | lakectl.cat | Syntax highlighting | `brew install bat` |
 | **AWS CLI** | aws.* scripts | AWS operations | `brew install awscli` |
 | **saml2aws** | aws.login | AWS SAML authentication | `brew install saml2aws` |
-| **kubectl** | kube.connect, create.api.token | Kubernetes cluster access | `brew install kubectl` |
+| **kubectl** | kube.connect, kube.logs, create.api.token | Kubernetes cluster access | `brew install kubectl` |
 | **restish** | restish.prepare | REST API client | `brew install restish` |
 | **authenticator** | generate.mfa.token | TOTP token generation | `brew install authenticator` |
 
@@ -83,6 +83,7 @@ This makes all scripts callable by name from anywhere.
 - **aws.login** - Login to AWS profile and export credentials (auto-generates MFA token)
 - **aws.secret** - Retrieve AWS secrets with interactive profile selection
 - **kube.connect** - Update kubeconfig for an EKS cluster with interactive selection
+- **kube.logs** - Print logs of a Kubernetes pod (interactive pod selection, follow or dump)
 
 ### lakefs/
 
@@ -211,7 +212,8 @@ All scripts follow these conventions:
 ├── aws/
 │   ├── aws.login          # AWS authentication
 │   ├── aws.secret         # AWS secrets retrieval
-│   └── kube.connect       # EKS kubeconfig management
+│   ├── kube.connect       # EKS kubeconfig management
+│   └── kube.logs          # Pod log viewer
 ├── lakefs/
 │   ├── create.api.token   # JWT token generation
 │   ├── restish.prepare    # REST API setup
