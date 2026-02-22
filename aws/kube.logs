@@ -133,46 +133,76 @@ fi
 
 echo "Namespace: $NAMESPACE" >&2
 
-# --- pod selection ---
+# --- resource type selection ---
 
-echo "Fetching pods..." >&2
-PODS=$(kubectl get pods -n "$NAMESPACE" -o custom-columns=NAME:.metadata.name,STATUS:.status.phase,RESTARTS:.status.containerStatuses[0].restartCount,AGE:.metadata.creationTimestamp --no-headers 2>/dev/null) || {
-  echo "error: failed to list pods in namespace '$NAMESPACE'" >&2
+RESOURCE_TYPES="pod
+deployment
+statefulset
+daemonset
+job"
+
+RESOURCE_TYPE=$(echo "$RESOURCE_TYPES" | fzf_with_last "$(cache_read resource_type)" "Resource type: ") || {
+  echo "error: no resource type selected" >&2
+  exit 1
+}
+
+echo "Resource type: $RESOURCE_TYPE" >&2
+
+# --- resource selection ---
+
+echo "Fetching ${RESOURCE_TYPE}s..." >&2
+RESOURCES=$(kubectl get "$RESOURCE_TYPE" -n "$NAMESPACE" -o custom-columns=NAME:.metadata.name --no-headers 2>/dev/null) || {
+  echo "error: failed to list ${RESOURCE_TYPE}s in namespace '$NAMESPACE'" >&2
   exit 3
 }
 
-if [[ -z "$PODS" ]]; then
-  echo "error: no pods found in namespace '$NAMESPACE'" >&2
+if [[ -z "$RESOURCES" ]]; then
+  echo "error: no ${RESOURCE_TYPE}s found in namespace '$NAMESPACE'" >&2
   exit 1
 fi
 
-# Match by deployment prefix (strip trailing replicaset+pod hash)
-LAST_POD=$(cache_read pod)
-POD_PREFIX=""
-if [[ -n "$LAST_POD" ]]; then
-  POD_PREFIX=$(echo "$LAST_POD" | sed -E 's/-[a-f0-9]+-[a-z0-9]+$//' | sed -E 's/-[a-f0-9]{8,}$//')
+LAST_RESOURCE=$(cache_read resource)
+if [[ "$RESOURCE_TYPE" == "pod" ]]; then
+  # Pods have ephemeral names — match by deployment prefix
+  RESOURCE_HINT=""
+  if [[ -n "$LAST_RESOURCE" ]]; then
+    RESOURCE_HINT=$(echo "$LAST_RESOURCE" | sed -E 's/-[a-f0-9]+-[a-z0-9]+$//' | sed -E 's/-[a-f0-9]{8,}$//')
+  fi
+  RESOURCE=$(echo "$RESOURCES" | fzf_with_last "$RESOURCE_HINT" "Select ${RESOURCE_TYPE}: " prefix) || {
+    echo "error: no ${RESOURCE_TYPE} selected" >&2
+    exit 1
+  }
+else
+  RESOURCE=$(echo "$RESOURCES" | fzf_with_last "$LAST_RESOURCE" "Select ${RESOURCE_TYPE}: ") || {
+    echo "error: no ${RESOURCE_TYPE} selected" >&2
+    exit 1
+  }
 fi
-POD_LINE=$(echo "$PODS" | fzf_with_last "$POD_PREFIX" "Select pod: " prefix) || {
-  echo "error: no pod selected" >&2
-  exit 1
-}
 
-POD=$(echo "$POD_LINE" | awk '{print $1}')
-echo "Pod: $POD" >&2
+# Build the target for kubectl logs
+if [[ "$RESOURCE_TYPE" == "pod" ]]; then
+  LOG_TARGET="$RESOURCE"
+else
+  LOG_TARGET="${RESOURCE_TYPE}/${RESOURCE}"
+fi
+
+echo "${RESOURCE_TYPE}: $RESOURCE" >&2
 
 # --- container selection (if multiple) ---
 
-CONTAINERS=$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.spec.containers[*].name}' | tr ' ' '\n')
-CONTAINER_COUNT=$(echo "$CONTAINERS" | wc -l | tr -d ' ')
-
 CONTAINER_FLAG=""
-if [[ "$CONTAINER_COUNT" -gt 1 ]]; then
-  CONTAINER=$(echo "$CONTAINERS" | fzf_with_last "$(cache_read container)" "Select container: ") || {
-    echo "error: no container selected" >&2
-    exit 1
-  }
-  CONTAINER_FLAG="-c $CONTAINER"
-  echo "Container: $CONTAINER" >&2
+if [[ "$RESOURCE_TYPE" == "pod" ]]; then
+  CONTAINERS=$(kubectl get pod "$RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.containers[*].name}' | tr ' ' '\n')
+  CONTAINER_COUNT=$(echo "$CONTAINERS" | wc -l | tr -d ' ')
+
+  if [[ "$CONTAINER_COUNT" -gt 1 ]]; then
+    CONTAINER=$(echo "$CONTAINERS" | fzf_with_last "$(cache_read container)" "Select container: ") || {
+      echo "error: no container selected" >&2
+      exit 1
+    }
+    CONTAINER_FLAG="-c $CONTAINER"
+    echo "Container: $CONTAINER" >&2
+  fi
 fi
 
 # --- format selection ---
@@ -207,7 +237,8 @@ MODE=$(printf "follow\ndump" | fzf_with_last "$(cache_read mode)" "Follow logs o
 # --- save selections ---
 
 cache_write namespace "$NAMESPACE"
-cache_write pod "$POD"
+cache_write resource_type "$RESOURCE_TYPE"
+cache_write resource "$RESOURCE"
 [[ -n "${CONTAINER:-}" ]] && cache_write container "$CONTAINER"
 cache_write format "$FORMAT"
 cache_write mode "$MODE"
@@ -226,8 +257,8 @@ format_logs() {
 
 if [[ "$MODE" == "follow" ]]; then
   # shellcheck disable=SC2086
-  kubectl logs -f "$POD" -n "$NAMESPACE" $CONTAINER_FLAG | format_logs
+  kubectl logs -f "$LOG_TARGET" -n "$NAMESPACE" $CONTAINER_FLAG | format_logs
 else
   # shellcheck disable=SC2086
-  kubectl logs --tail="$LINES" "$POD" -n "$NAMESPACE" $CONTAINER_FLAG | format_logs
+  kubectl logs --tail="$LINES" "$LOG_TARGET" -n "$NAMESPACE" $CONTAINER_FLAG | format_logs
 fi
