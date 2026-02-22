@@ -57,14 +57,23 @@ cache_write() {
 }
 
 # fzf with last selection at the top of the list
+# Usage: echo "$items" | fzf_with_last <last_value> <prompt> [prefix]
+#   If "prefix" is passed, match lines starting with <last_value> instead of exact match
 fzf_with_last() {
-  local last="$1" prompt="$2"
+  local last="$1" prompt="$2" match_mode="${3:-exact}"
   local items
   items=$(cat)
-  # Move last selection to top if it exists in the list
-  if [[ -n "$last" ]] && echo "$items" | grep -qxF "$last"; then
-    items=$(echo "$items" | grep -vxF "$last")
-    items="${last}"$'\n'"${items}"
+  if [[ -n "$last" ]]; then
+    local matched rest
+    if [[ "$match_mode" == "prefix" ]]; then
+      matched=$(echo "$items" | grep "^${last}" | head -1) || true
+    else
+      matched=$(echo "$items" | grep -xF "$last" | head -1) || true
+    fi
+    if [[ -n "$matched" ]]; then
+      rest=$(echo "$items" | grep -vxF "$matched")
+      items="${matched}"$'\n'"${rest}"
+    fi
   fi
   echo "$items" | fzf --exact --prompt="$prompt" --height=~50% --reverse
 }
@@ -137,14 +146,13 @@ if [[ -z "$PODS" ]]; then
   exit 1
 fi
 
-# Use deployment prefix from last pod as search hint (strip trailing pod hash)
+# Match by deployment prefix (strip trailing replicaset+pod hash)
 LAST_POD=$(cache_read pod)
-POD_QUERY=""
+POD_PREFIX=""
 if [[ -n "$LAST_POD" ]]; then
-  # Strip trailing replicaset+pod hash (e.g., "deploy-abc123-xyz45" -> "deploy")
-  POD_QUERY=$(echo "$LAST_POD" | sed -E 's/-[a-f0-9]+-[a-z0-9]+$//' | sed -E 's/-[a-f0-9]{8,}$//')
+  POD_PREFIX=$(echo "$LAST_POD" | sed -E 's/-[a-f0-9]+-[a-z0-9]+$//' | sed -E 's/-[a-f0-9]{8,}$//')
 fi
-POD_LINE=$(echo "$PODS" | fzf --exact --query="$POD_QUERY" --prompt="Select pod: " --height=~50% --reverse) || {
+POD_LINE=$(echo "$PODS" | fzf_with_last "$POD_PREFIX" "Select pod: " prefix) || {
   echo "error: no pod selected" >&2
   exit 1
 }
