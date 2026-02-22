@@ -10,20 +10,28 @@ Usage:
 Options:
   -n, --namespace NS    Namespace to list pods from (default: interactive selection)
   -l, --lines N         Number of lines to dump (default: 200)
+  -f, --format FMT      Output format: raw, pretty, compact (default: interactive selection)
   -h, --help            Show this help
+
+Formats:
+  raw       Output as-is from kubectl (default kubectl behavior)
+  pretty    Pretty-print JSON lines with jq (colored, indented)
+  compact   One JSON object per line (no mid-object line breaks)
 
 Examples:
   kube.logs                          # interactive namespace + pod + mode selection
   kube.logs -n my-namespace          # skip namespace selection
   kube.logs -n my-namespace -l 500   # dump last 500 lines
+  kube.logs -f pretty                # pretty-print JSON logs
 
 Requires:
-  kubectl, fzf
+  kubectl, fzf, jq (for pretty/compact formats)
 EOF
 }
 
 NAMESPACE=""
 LINES=200
+FORMAT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,6 +45,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     -l|--lines)
       LINES="$2"
+      shift 2
+      ;;
+    -f|--format)
+      FORMAT="$2"
       shift 2
       ;;
     *)
@@ -112,6 +124,28 @@ if [[ "$CONTAINER_COUNT" -gt 1 ]]; then
   echo "Container: $CONTAINER" >&2
 fi
 
+# --- format selection ---
+
+if [[ -z "$FORMAT" ]]; then
+  FORMAT=$(printf "raw\npretty\ncompact" | fzf --exact --prompt="Output format: " --height=~50% --reverse) || {
+    echo "error: no format selected" >&2
+    exit 1
+  }
+fi
+
+case "$FORMAT" in
+  raw|pretty|compact) ;;
+  *)
+    echo "error: unknown format '$FORMAT' (expected: raw, pretty, compact)" >&2
+    exit 2
+    ;;
+esac
+
+if [[ "$FORMAT" != "raw" ]] && ! command -v jq >/dev/null 2>&1; then
+  echo "error: jq is required for '$FORMAT' format. Install with: brew install jq" >&2
+  exit 127
+fi
+
 # --- mode selection ---
 
 MODE=$(printf "follow\ndump" | fzf --exact --prompt="Follow logs or dump last ${LINES} lines? " --height=~50% --reverse) || {
@@ -121,10 +155,19 @@ MODE=$(printf "follow\ndump" | fzf --exact --prompt="Follow logs or dump last ${
 
 echo "" >&2
 
+# Build the jq filter pipeline
+format_logs() {
+  case "$FORMAT" in
+    pretty)  jq '.' ;;
+    compact) jq -c '.' ;;
+    raw)     cat ;;
+  esac
+}
+
 if [[ "$MODE" == "follow" ]]; then
   # shellcheck disable=SC2086
-  kubectl logs -f "$POD" -n "$NAMESPACE" $CONTAINER_FLAG
+  kubectl logs -f "$POD" -n "$NAMESPACE" $CONTAINER_FLAG | format_logs
 else
   # shellcheck disable=SC2086
-  kubectl logs --tail="$LINES" "$POD" -n "$NAMESPACE" $CONTAINER_FLAG
+  kubectl logs --tail="$LINES" "$POD" -n "$NAMESPACE" $CONTAINER_FLAG | format_logs
 fi
