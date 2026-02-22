@@ -155,11 +155,12 @@ MODE=$(printf "follow\ndump" | fzf --exact --prompt="Follow logs or dump last ${
 
 echo "" >&2
 
-# Build the jq filter pipeline
+# Format log output — gracefully handles non-JSON lines
+JQ_TRYPARSE='def try_json: try fromjson; try_json // .'
 format_logs() {
   case "$FORMAT" in
-    pretty)  jq '.' ;;
-    compact) jq -c '.' ;;
+    pretty)  jq -R -r "$JQ_TRYPARSE" ;;
+    compact) jq -c -R -r "$JQ_TRYPARSE" ;;
     raw)     cat ;;
   esac
 }
