@@ -243,34 +243,10 @@ echo "" >&2
 
 # Format log output — gracefully handles non-JSON lines
 JQ_TRYPARSE='def try_json: try fromjson; try_json // .'
-
-# Colorize by log level: red for error/fatal, yellow for warn/warning
-# Works on both compact (single-line) and pretty (multi-line) JSON
-colorize_level() {
-  awk '
-    /^\{.*\}$/ {
-      if ($0 ~ /"level":"(error|fatal)"/) printf "\033[31m%s\033[0m\n", $0
-      else if ($0 ~ /"level":"warn(ing)?"/) printf "\033[33m%s\033[0m\n", $0
-      else print
-      next
-    }
-    /^\{/ { buf = $0; in_obj = 1; next }
-    in_obj && /^\}/ {
-      buf = buf "\n" $0
-      if (buf ~ /"level": "(error|fatal)"/) printf "\033[31m%s\033[0m\n", buf
-      else if (buf ~ /"level": "warn(ing)?"/) printf "\033[33m%s\033[0m\n", buf
-      else print buf
-      buf = ""; in_obj = 0; next
-    }
-    in_obj { buf = buf "\n" $0; next }
-    { print }
-  '
-}
-
 format_logs() {
   case "$FORMAT" in
-    pretty)  jq -R -r "$JQ_TRYPARSE" | colorize_level ;;
-    compact) jq -c -R -r "$JQ_TRYPARSE" | colorize_level ;;
+    pretty)  jq -R -r "$JQ_TRYPARSE" ;;
+    compact) jq -c -R -r "$JQ_TRYPARSE" ;;
   esac
 }
 
