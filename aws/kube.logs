@@ -136,9 +136,6 @@ echo "Namespace: $NAMESPACE" >&2
 # --- resource type selection ---
 
 RESOURCE_TYPES="pod
-deployment
-statefulset
-daemonset
 job"
 
 RESOURCE_TYPE=$(echo "$RESOURCE_TYPES" | fzf_with_last "$(cache_read resource_type)" "Resource type: ") || {
