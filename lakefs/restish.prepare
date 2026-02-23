@@ -6,22 +6,28 @@ RESTISH_CONFIG="$HOME/Library/Application Support/restish/apis.json"
 API_DIR="$HOME/code/treeverse/cloud-controlplane/service/api"
 
 # Service definitions
-ADMIN_SVC=control-plane-admin-service
-ADMIN_PORT=8087
 ADMIN_SPEC="$API_DIR/admin.yml"
-
-GIAM_SVC=control-plane-giam-service
-GIAM_PORT=8085
 GIAM_SPEC="$API_DIR/authorization.yml"
+
+LOCAL_MODE=false
+if [[ ${1:-} == "--local" ]]; then
+  LOCAL_MODE=true
+  shift
+fi
 
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  restish.prepare
+  restish.prepare [--local]
+
+Options:
+  --local  Point restish at locally running services (ports 8002/8001)
+           instead of port-forwarding to the cluster
 
 Notes:
   - Detects the control-plane namespace from the current kubectl context
-  - Starts port-forwarding for admin and giam services
+  - In remote mode: starts port-forwarding for admin and giam services
+  - In local mode: assumes services are already running (e.g. via mirrord)
   - Generates tokens for admin (superadmin) and giam (lakefs)
   - Updates restish config with localhost base URLs and bearer tokens
 EOF
@@ -30,6 +36,16 @@ EOF
 if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
   usage
   exit 0
+fi
+
+if [[ "$LOCAL_MODE" == true ]]; then
+  ADMIN_PORT=8002
+  GIAM_PORT=8001
+else
+  ADMIN_SVC=control-plane-admin-service
+  ADMIN_PORT=8087
+  GIAM_SVC=control-plane-giam-service
+  GIAM_PORT=8085
 fi
 
 # Check for jq
@@ -56,24 +72,28 @@ else
 fi
 echo "Namespace: $NAMESPACE" >&2
 
-# Start port-forwarding first
-echo "Starting port-forwards..." >&2
+if [[ "$LOCAL_MODE" == true ]]; then
+  echo "Local mode: expecting services on ports $ADMIN_PORT (admin) and $GIAM_PORT (giam)" >&2
+else
+  # Start port-forwarding
+  echo "Starting port-forwards..." >&2
 
-start_port_forward() {
-  local svc="$1" port="$2"
+  start_port_forward() {
+    local svc="$1" port="$2"
 
-  # Kill existing process on this port
-  if lsof -ti :"$port" >/dev/null 2>&1; then
-    kill $(lsof -ti :"$port") 2>/dev/null
-    sleep 0.5
-  fi
+    # Kill existing process on this port
+    if lsof -ti :"$port" >/dev/null 2>&1; then
+      kill $(lsof -ti :"$port") 2>/dev/null
+      sleep 0.5
+    fi
 
-  kubectl port-forward "svc/$svc" "$port:80" -n "$NAMESPACE" >/dev/null 2>&1 &
-  echo "  $svc -> localhost:$port (pid $!)" >&2
-}
+    kubectl port-forward "svc/$svc" "$port:80" -n "$NAMESPACE" >/dev/null 2>&1 &
+    echo "  $svc -> localhost:$port (pid $!)" >&2
+  }
 
-start_port_forward "$ADMIN_SVC" "$ADMIN_PORT"
-start_port_forward "$GIAM_SVC" "$GIAM_PORT"
+  start_port_forward "$ADMIN_SVC" "$ADMIN_PORT"
+  start_port_forward "$GIAM_SVC" "$GIAM_PORT"
+fi
 
 # Wait for admin to be ready
 echo "Waiting for admin service..." >&2

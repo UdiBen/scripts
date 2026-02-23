@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# Description: Configure and prepare a local mirrord session against a remote control-plane dev environment
+set -euo pipefail
+
+REPO_DIR="$HOME/code/treeverse/cloud-controlplane"
+MIRRORD_DIR="$REPO_DIR/.mirrord"
+CONFIG_BASE="$HOME/code/treeverse/config/mirrord"
+STATE_FILE="$HOME/.config/mirrord-prepare/last"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  mirrord.prepare [service]
+
+Prepares a mirrord session for running a control-plane service locally.
+
+Steps:
+  1. Select a control-plane namespace (fzf)
+  2. Select a service: admin or giam (fzf, or pass as argument)
+  3. Extract the configmap to ~/code/treeverse/config/mirrord/<ns>/config.yaml
+  4. Generate .mirrord/<service>.json
+  5. Print the mirrord exec command to stdout
+
+Previous selections are remembered and pre-selected on next run.
+
+Examples:
+  mirrord.prepare          # interactive selection
+  mirrord.prepare giam     # skip service selection
+EOF
+}
+
+if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+# --- Dependencies ---
+for cmd in kubectl fzf jq; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "error: $cmd is required. Install with: brew install $cmd" >&2
+    exit 127
+  fi
+done
+
+if ! command -v mirrord >/dev/null 2>&1; then
+  echo "error: mirrord is required. Install with: brew install metalbear-co/mirrord/mirrord" >&2
+  exit 127
+fi
+
+# --- Load previous selections ---
+LAST_NAMESPACE=""
+LAST_SERVICE=""
+if [[ -f "$STATE_FILE" ]]; then
+  LAST_NAMESPACE=$(sed -n '1p' "$STATE_FILE")
+  LAST_SERVICE=$(sed -n '2p' "$STATE_FILE")
+fi
+
+# --- Namespace selection ---
+CP_NAMESPACES=$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep control-plane) || true
+if [[ -z "$CP_NAMESPACES" ]]; then
+  echo "error: no control-plane namespace found in current kubectl context" >&2
+  exit 2
+fi
+
+NS_COUNT=$(echo "$CP_NAMESPACES" | wc -l | tr -d ' ')
+if [[ "$NS_COUNT" -eq 1 ]]; then
+  NAMESPACE="$CP_NAMESPACES"
+else
+  FZF_NS_ARGS=(--exact --prompt="Select namespace: " --height=~50% --reverse)
+  if [[ -n "$LAST_NAMESPACE" ]]; then
+    FZF_NS_ARGS+=(--query="$LAST_NAMESPACE" --select-1)
+  fi
+  NAMESPACE=$(echo "$CP_NAMESPACES" | fzf "${FZF_NS_ARGS[@]}") || {
+    echo "error: no namespace selected" >&2
+    exit 1
+  }
+fi
+echo "Namespace: $NAMESPACE" >&2
+
+# --- Service selection ---
+if [[ -n "${1:-}" && ${1:-} != "-"* ]]; then
+  SERVICE="$1"
+else
+  FZF_SVC_ARGS=(--exact --prompt="Select service: " --height=~50% --reverse)
+  if [[ -n "$LAST_SERVICE" ]]; then
+    FZF_SVC_ARGS+=(--query="$LAST_SERVICE" --select-1)
+  fi
+  SERVICE=$(printf "admin\ngiam" | fzf "${FZF_SVC_ARGS[@]}") || {
+    echo "error: no service selected" >&2
+    exit 1
+  }
+fi
+
+case "$SERVICE" in
+  admin) DEPLOYMENT=control-plane-admin ;;
+  giam)  DEPLOYMENT=control-plane-giam ;;
+  *)
+    echo "error: unknown service '$SERVICE'. Must be: admin or giam" >&2
+    exit 1
+    ;;
+esac
+echo "Service: $SERVICE" >&2
+
+# --- Save selections ---
+mkdir -p "$(dirname "$STATE_FILE")"
+printf '%s\n%s\n' "$NAMESPACE" "$SERVICE" > "$STATE_FILE"
+
+# --- Verify deployment exists ---
+if ! kubectl get deployment "$DEPLOYMENT" -n "$NAMESPACE" >/dev/null 2>&1; then
+  echo "error: deployment '$DEPLOYMENT' not found in namespace '$NAMESPACE'" >&2
+  exit 2
+fi
+
+# --- Extract configmap ---
+CONFIG_DIR="$CONFIG_BASE/$NAMESPACE"
+mkdir -p "$CONFIG_DIR"
+
+echo "Extracting configmap from $NAMESPACE..." >&2
+kubectl get configmap app-config -n "$NAMESPACE" -o jsonpath='{.data.config\.yaml}' > "$CONFIG_DIR/config.yaml"
+echo "Config saved to $CONFIG_DIR/config.yaml" >&2
+
+# --- Generate mirrord JSON ---
+mkdir -p "$MIRRORD_DIR"
+
+MIRRORD_CONFIG="$MIRRORD_DIR/$SERVICE.json"
+cat > "$MIRRORD_CONFIG" <<MIRRORD_EOF
+{
+  "agent": {
+    "privileged": true
+  },
+  "target": {
+    "path": "deployment/$DEPLOYMENT",
+    "namespace": "$NAMESPACE"
+  },
+  "feature": {
+    "env": {
+      "include": "CONTROLPLANE_*"
+    },
+    "fs": "read",
+    "network": {
+      "incoming": {
+        "mode": "steal"
+      },
+      "outgoing": true,
+      "dns": true
+    }
+  }
+}
+MIRRORD_EOF
+echo "mirrord config saved to $MIRRORD_CONFIG" >&2
+
+# --- Output command ---
+echo "" >&2
+echo "Run this command from $REPO_DIR:" >&2
+echo "" >&2
+
+echo -e "\033[1;34mmirrord exec -f .mirrord/$SERVICE.json -- ./service/controlplane -c $CONFIG_DIR/config.yaml run $SERVICE\033[0m"
