@@ -10,13 +10,12 @@ Usage:
 Options:
   -n, --namespace NS    Namespace to list pods from (default: interactive selection)
   -l, --lines N         Number of lines to dump (default: 200)
-  -f, --format FMT      Output format: raw, pretty, compact (default: interactive selection)
+  -f, --format FMT      Output format: pretty, compact (default: interactive selection)
   -h, --help            Show this help
 
 Formats:
-  raw       Output as-is from kubectl (default kubectl behavior)
   pretty    Pretty-print JSON lines with jq (colored, indented)
-  compact   One JSON object per line (no mid-object line breaks)
+  compact   One JSON object per line (colored)
 
 Examples:
   kube.logs                          # interactive namespace + pod + mode selection
@@ -25,7 +24,7 @@ Examples:
   kube.logs -f pretty                # pretty-print JSON logs
 
 Requires:
-  kubectl, fzf, jq (for pretty/compact formats)
+  kubectl, fzf, jq
 EOF
 }
 
@@ -113,6 +112,11 @@ fi
 
 if ! command -v fzf >/dev/null 2>&1; then
   echo "error: fzf is required. Install with: brew install fzf" >&2
+  exit 127
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "error: jq is required. Install with: brew install jq" >&2
   exit 127
 fi
 
@@ -205,24 +209,19 @@ fi
 # --- format selection ---
 
 if [[ -z "$FORMAT" ]]; then
-  FORMAT=$(printf "raw\npretty\ncompact" | fzf_with_last "$(cache_read format)" "Output format: ") || {
+  FORMAT=$(printf "pretty\ncompact" | fzf_with_last "$(cache_read format)" "Output format: ") || {
     echo "error: no format selected" >&2
     exit 1
   }
 fi
 
 case "$FORMAT" in
-  raw|pretty|compact) ;;
+  pretty|compact) ;;
   *)
-    echo "error: unknown format '$FORMAT' (expected: raw, pretty, compact)" >&2
+    echo "error: unknown format '$FORMAT' (expected: pretty, compact)" >&2
     exit 2
     ;;
 esac
-
-if [[ "$FORMAT" != "raw" ]] && ! command -v jq >/dev/null 2>&1; then
-  echo "error: jq is required for '$FORMAT' format. Install with: brew install jq" >&2
-  exit 127
-fi
 
 # --- mode selection ---
 
@@ -248,7 +247,6 @@ format_logs() {
   case "$FORMAT" in
     pretty)  jq -R -r "$JQ_TRYPARSE" ;;
     compact) jq -c -R -r "$JQ_TRYPARSE" ;;
-    raw)     cat ;;
   esac
 }
 
