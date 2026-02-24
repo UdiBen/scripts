@@ -25,6 +25,32 @@ if ! command -v fzf >/dev/null 2>&1; then
   exit 127
 fi
 
+STATE_FILE="$HOME/.config/kube-connect/last"
+LAST_PROFILE=""
+LAST_REGION=""
+LAST_CLUSTER=""
+if [[ -f "$STATE_FILE" ]]; then
+  LAST_PROFILE=$(sed -n '1p' "$STATE_FILE")
+  LAST_REGION=$(sed -n '2p' "$STATE_FILE")
+  LAST_CLUSTER=$(sed -n '3p' "$STATE_FILE")
+fi
+
+# fzf with last selection sorted to the top of the list
+fzf_with_last() {
+  local last="$1" prompt="$2"
+  local items
+  items=$(cat)
+  if [[ -n "$last" ]]; then
+    local matched rest
+    matched=$(echo "$items" | grep -xF "$last" | head -1) || true
+    if [[ -n "$matched" ]]; then
+      rest=$(echo "$items" | grep -vxF "$matched")
+      items="${matched}"$'\n'"${rest}"
+    fi
+  fi
+  echo "$items" | fzf --exact --prompt="$prompt" --height=~50% --reverse
+}
+
 # Parse arguments
 PROFILE=""
 REGION=""
@@ -68,10 +94,15 @@ if [[ -z "$PROFILE" ]]; then
     exit 1
   fi
 
-  PROFILE=$(echo "$profiles" | fzf --exact --prompt="Select AWS profile: " --height=~50% --reverse) || {
-    echo "error: no profile selected" >&2
-    exit 1
-  }
+  PROFILE_COUNT=$(echo "$profiles" | wc -l | tr -d ' ')
+  if [[ "$PROFILE_COUNT" -eq 1 ]]; then
+    PROFILE="$profiles"
+  else
+    PROFILE=$(echo "$profiles" | fzf_with_last "$LAST_PROFILE" "Select AWS profile: ") || {
+      echo "error: no profile selected" >&2
+      exit 1
+    }
+  fi
 fi
 echo "Using profile: $PROFILE" >&2
 
@@ -88,7 +119,7 @@ ap-southeast-1
 ap-southeast-2
 ap-northeast-1"
 
-  REGION=$(echo "$regions" | fzf --exact --prompt="Select region: " --height=~50% --reverse) || {
+  REGION=$(echo "$regions" | fzf_with_last "$LAST_REGION" "Select region: ") || {
     echo "error: no region selected" >&2
     exit 1
   }
@@ -108,12 +139,21 @@ if [[ -z "$CLUSTER" ]]; then
     exit 1
   fi
 
-  CLUSTER=$(echo "$clusters" | fzf --exact --prompt="Select EKS cluster: " --height=~50% --reverse) || {
-    echo "error: no cluster selected" >&2
-    exit 1
-  }
+  CLUSTER_COUNT=$(echo "$clusters" | wc -l | tr -d ' ')
+  if [[ "$CLUSTER_COUNT" -eq 1 ]]; then
+    CLUSTER="$clusters"
+  else
+    CLUSTER=$(echo "$clusters" | fzf_with_last "$LAST_CLUSTER" "Select EKS cluster: ") || {
+      echo "error: no cluster selected" >&2
+      exit 1
+    }
+  fi
 fi
 echo "Using cluster: $CLUSTER" >&2
+
+# Save selections
+mkdir -p "$(dirname "$STATE_FILE")"
+printf '%s\n%s\n%s\n' "$PROFILE" "$REGION" "$CLUSTER" > "$STATE_FILE"
 
 # Update kubeconfig
 echo "Updating kubeconfig..." >&2

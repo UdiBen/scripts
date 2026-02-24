@@ -25,6 +25,24 @@ if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
   exit 0
 fi
 
+STATE_FILE="$HOME/.config/aws-login/last"
+
+# fzf with last selection sorted to the top of the list
+fzf_with_last() {
+  local last="$1" prompt="$2"
+  local items
+  items=$(cat)
+  if [[ -n "$last" ]]; then
+    local matched rest
+    matched=$(echo "$items" | grep -xF "$last" | head -1) || true
+    if [[ -n "$matched" ]]; then
+      rest=$(echo "$items" | grep -vxF "$matched")
+      items="${matched}"$'\n'"${rest}"
+    fi
+  fi
+  echo "$items" | fzf --exact --prompt="$prompt" --height=~50% --reverse
+}
+
 # If first arg looks like a profile (not a flag), use it; otherwise do interactive selection
 if [[ $# -ge 1 && ! "$1" =~ ^- ]]; then
   profile="$1"
@@ -46,11 +64,22 @@ else
     exit 1
   fi
 
-  profile=$(echo "$profiles" | fzf --exact --prompt="Select AWS profile: " --height=~50% --reverse) || {
-    echo "error: no profile selected" >&2
-    exit 1
-  }
+  PROFILE_COUNT=$(echo "$profiles" | wc -l | tr -d ' ')
+  if [[ "$PROFILE_COUNT" -eq 1 ]]; then
+    profile="$profiles"
+  else
+    LAST_PROFILE=""
+    [[ -f "$STATE_FILE" ]] && LAST_PROFILE=$(cat "$STATE_FILE")
+    profile=$(echo "$profiles" | fzf_with_last "$LAST_PROFILE" "Select AWS profile: ") || {
+      echo "error: no profile selected" >&2
+      exit 1
+    }
+  fi
 fi
+
+# Save selection
+mkdir -p "$(dirname "$STATE_FILE")"
+echo "$profile" > "$STATE_FILE"
 
 region=""
 while [[ $# -gt 0 ]]; do
