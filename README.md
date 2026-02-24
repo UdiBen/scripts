@@ -32,12 +32,6 @@ A curated collection of utility scripts for AWS, Kubernetes, lakeFS, and other d
 | **restish** | restish.prepare | REST API client | `brew install restish` |
 | **authenticator** | generate.mfa.token | TOTP token generation | `brew install authenticator` |
 
-### Language Requirements
-
-| Language | Required By | Installation |
-|----------|-------------|--------------|
-| **Go 1.x+** | ctl/ (scriptctl) | `brew install go` |
-
 ## Installation
 
 ### Quick Start
@@ -63,7 +57,7 @@ If you prefer to install dependencies manually:
 brew install fzf jq
 
 # Optional tools (install as needed)
-brew install bat awscli saml2aws kubectl restish go authenticator
+brew install bat awscli saml2aws kubectl restish authenticator
 ```
 
 ### PATH Setup
@@ -88,6 +82,7 @@ This makes all scripts callable by name from anywhere.
 ### lakefs/
 
 - **create.api.token** - Create a JWT token for a dev control-plane namespace
+- **mirrord.prepare** - Configure and prepare a local mirrord session against a remote control-plane dev environment
 - **restish.prepare** - Set up restish for admin and giam APIs with tokens and port-forwarding
 - **lakectl.set** - Set active lakectl configuration profile
 - **lakectl.cat** - Display lakectl config with syntax highlighting
@@ -216,18 +211,13 @@ All scripts follow these conventions:
 │   └── kube.logs          # Pod log viewer
 ├── lakefs/
 │   ├── create.api.token   # JWT token generation
+│   ├── mirrord.prepare    # mirrord session setup
 │   ├── restish.prepare    # REST API setup
 │   ├── lakectl.set        # lakeFS profile switcher
 │   └── lakectl.cat        # lakeFS config viewer
-├── common/
-│   ├── generate.mfa.token # MFA token generation
-│   └── add.alias          # Alias management
-└── ctl/                   # Go-based utilities
-    ├── Makefile
-    ├── README.md
-    ├── cmd/
-    ├── go.mod
-    └── scriptctl          # Compiled binary
+└── common/
+    ├── generate.mfa.token # MFA token generation
+    └── add.alias          # Alias management
 ```
 
 ## Troubleshooting
