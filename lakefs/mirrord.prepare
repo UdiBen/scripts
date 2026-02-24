@@ -68,7 +68,7 @@ if [[ "$NS_COUNT" -eq 1 ]]; then
 else
   FZF_NS_ARGS=(--exact --prompt="Select namespace: " --height=~50% --reverse)
   if [[ -n "$LAST_NAMESPACE" ]]; then
-    FZF_NS_ARGS+=(--query="$LAST_NAMESPACE" --select-1)
+    FZF_NS_ARGS+=(--query="$LAST_NAMESPACE")
   fi
   NAMESPACE=$(echo "$CP_NAMESPACES" | fzf "${FZF_NS_ARGS[@]}") || {
     echo "error: no namespace selected" >&2
@@ -81,11 +81,7 @@ echo "Namespace: $NAMESPACE" >&2
 if [[ -n "${1:-}" && ${1:-} != "-"* ]]; then
   SERVICE="$1"
 else
-  FZF_SVC_ARGS=(--exact --prompt="Select service: " --height=~50% --reverse)
-  if [[ -n "$LAST_SERVICE" ]]; then
-    FZF_SVC_ARGS+=(--query="$LAST_SERVICE" --select-1)
-  fi
-  SERVICE=$(printf "admin\ngiam" | fzf "${FZF_SVC_ARGS[@]}") || {
+  SERVICE=$(printf "admin\ngiam" | fzf --exact --prompt="Select service: " --height=~50% --reverse) || {
     echo "error: no service selected" >&2
     exit 1
   }
