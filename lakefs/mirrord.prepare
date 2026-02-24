@@ -47,6 +47,23 @@ if ! command -v mirrord >/dev/null 2>&1; then
   exit 127
 fi
 
+# fzf with last selection sorted to the top of the list
+# Usage: echo "$items" | fzf_with_last <last_value> <prompt>
+fzf_with_last() {
+  local last="$1" prompt="$2"
+  local items
+  items=$(cat)
+  if [[ -n "$last" ]]; then
+    local matched rest
+    matched=$(echo "$items" | grep -xF "$last" | head -1) || true
+    if [[ -n "$matched" ]]; then
+      rest=$(echo "$items" | grep -vxF "$matched")
+      items="${matched}"$'\n'"${rest}"
+    fi
+  fi
+  echo "$items" | fzf --exact --prompt="$prompt" --height=~50% --reverse
+}
+
 # --- Load previous selections ---
 LAST_NAMESPACE=""
 LAST_SERVICE=""
@@ -66,11 +83,7 @@ NS_COUNT=$(echo "$CP_NAMESPACES" | wc -l | tr -d ' ')
 if [[ "$NS_COUNT" -eq 1 ]]; then
   NAMESPACE="$CP_NAMESPACES"
 else
-  FZF_NS_ARGS=(--exact --prompt="Select namespace: " --height=~50% --reverse)
-  if [[ -n "$LAST_NAMESPACE" ]]; then
-    FZF_NS_ARGS+=(--query="$LAST_NAMESPACE")
-  fi
-  NAMESPACE=$(echo "$CP_NAMESPACES" | fzf "${FZF_NS_ARGS[@]}") || {
+  NAMESPACE=$(echo "$CP_NAMESPACES" | fzf_with_last "$LAST_NAMESPACE" "Select namespace: ") || {
     echo "error: no namespace selected" >&2
     exit 1
   }
@@ -81,7 +94,7 @@ echo "Namespace: $NAMESPACE" >&2
 if [[ -n "${1:-}" && ${1:-} != "-"* ]]; then
   SERVICE="$1"
 else
-  SERVICE=$(printf "admin\ngiam" | fzf --exact --prompt="Select service: " --height=~50% --reverse) || {
+  SERVICE=$(printf "admin\ngiam" | fzf_with_last "$LAST_SERVICE" "Select service: ") || {
     echo "error: no service selected" >&2
     exit 1
   }

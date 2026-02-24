@@ -10,6 +10,7 @@ All scripts follow these patterns strictly:
 - **Help**: `usage()` function using heredoc to stderr (`cat >&2 <<'EOF'`), triggered by `-h`/`--help`
 - **Arguments**: Support both CLI flags and interactive selection via fzf
 - **fzf**: Always check availability, use `--exact --height=~50% --reverse --prompt="..."`
+- **fzf selection**: Use `fzf_with_last` for interactive selections (sorts previous choice to top). If only a single value exists, select it automatically without showing fzf.
 - **Output**: Diagnostic/progress messages to stderr, data to stdout
 - **Errors**: stderr with `echo "error: ..." >&2`, exit codes: 1 (general), 2 (bad args), 3 (external failure), 127 (missing dependency)
 - **Dependency checks**: `command -v <tool> >/dev/null 2>&1` with helpful install instructions on failure

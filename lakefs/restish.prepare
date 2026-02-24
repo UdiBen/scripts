@@ -54,6 +54,37 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 127
 fi
 
+# fzf with last selection sorted to the top of the list
+# Usage: echo "$items" | fzf_with_last <last_value> <prompt> [prefix]
+#   If "prefix" is passed, match lines starting with <last_value> instead of exact match
+fzf_with_last() {
+  local last="$1" prompt="$2" match_mode="${3:-exact}"
+  local items
+  items=$(cat)
+  if [[ -n "$last" ]]; then
+    local matched rest
+    if [[ "$match_mode" == "prefix" ]]; then
+      matched=$(echo "$items" | grep "^${last}" | head -1) || true
+    else
+      matched=$(echo "$items" | grep -xF "$last" | head -1) || true
+    fi
+    if [[ -n "$matched" ]]; then
+      rest=$(echo "$items" | grep -vxF "$matched")
+      items="${matched}"$'\n'"${rest}"
+    fi
+  fi
+  echo "$items" | fzf --exact --prompt="$prompt" --height=~50% --reverse
+}
+
+# --- Load previous selections ---
+STATE_FILE="$HOME/.config/restish-prepare/last"
+LAST_NAMESPACE=""
+LAST_ORG=""
+if [[ -f "$STATE_FILE" ]]; then
+  LAST_NAMESPACE=$(sed -n '1p' "$STATE_FILE")
+  LAST_ORG=$(sed -n '2p' "$STATE_FILE")
+fi
+
 # Detect namespace
 CP_NAMESPACES=$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep control-plane) || true
 if [[ -z "$CP_NAMESPACES" ]]; then
@@ -65,7 +96,7 @@ NS_COUNT=$(echo "$CP_NAMESPACES" | wc -l | tr -d ' ')
 if [[ "$NS_COUNT" -eq 1 ]]; then
   NAMESPACE="$CP_NAMESPACES"
 else
-  NAMESPACE=$(echo "$CP_NAMESPACES" | fzf --exact --prompt="Select namespace: " --height=~50% --reverse) || {
+  NAMESPACE=$(echo "$CP_NAMESPACES" | fzf_with_last "$LAST_NAMESPACE" "Select namespace: ") || {
     echo "error: no namespace selected" >&2
     exit 1
   }
@@ -129,7 +160,7 @@ elif [[ "${ORG_COUNT:-0}" -gt 1 ]]; then
     exit 127
   fi
   ORG_ID=$(echo "$ORGS_JSON" | jq -r '.results[] | "\(.id)\t\(.name)"' | \
-    fzf --exact --prompt="Select organization: " --height=~50% --reverse | cut -f1) || {
+    fzf_with_last "$LAST_ORG" "Select organization: " prefix | cut -f1) || {
     echo "error: no organization selected" >&2
     exit 1
   }
@@ -147,6 +178,10 @@ else
   echo "warning: no organizations found - giam token will use a placeholder" >&2
   GIAM_TOKEN=""
 fi
+
+# --- Save selections ---
+mkdir -p "$(dirname "$STATE_FILE")"
+printf '%s\n%s\n' "$NAMESPACE" "${ORG_ID:-}" > "$STATE_FILE"
 
 # Build restish config
 echo "Updating restish config..." >&2
