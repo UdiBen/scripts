@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Print logs of a Kubernetes pod (interactive selection, follow or dump)
+# Description: Tail logs of Kubernetes pods/jobs using stern (interactive selection, follow or dump)
 set -euo pipefail
 
 usage() {
@@ -9,28 +9,38 @@ Usage:
 
 Options:
   -n, --namespace NS    Namespace to list pods from (default: interactive selection)
-  -l, --lines N         Number of lines to dump (default: 200)
-  -f, --format FMT      Output format: pretty, compact (default: interactive selection)
+  -l, --lines N         Number of lines to show (default: 200)
+  -o, --output FMT      Output format: default, json, ppextjson, raw (default: interactive selection)
+  -i, --include REGEX   Only show log lines matching regex (e.g. 'error|warn')
+  -e, --exclude REGEX   Exclude log lines matching regex
+  -H, --highlight REGEX Highlight matching text in output (no filtering)
   -h, --help            Show this help
 
 Formats:
-  pretty    Pretty-print JSON lines with jq (colored, indented)
-  compact   One JSON object per line (colored)
+  default     Colored output with pod/container prefix
+  json        JSON log lines
+  ppextjson   Pretty-printed extended JSON
+  raw         Raw log lines, no decoration
 
 Examples:
   kube.logs                          # interactive namespace + pod + mode selection
   kube.logs -n my-namespace          # skip namespace selection
-  kube.logs -n my-namespace -l 500   # dump last 500 lines
-  kube.logs -f pretty                # pretty-print JSON logs
+  kube.logs -n my-namespace -l 500   # show last 500 lines
+  kube.logs -o json                  # JSON output
+  kube.logs -i 'error|warn'         # only show error/warning lines
+  kube.logs -H 'timeout'            # highlight "timeout" in output
 
 Requires:
-  kubectl, fzf, jq
+  kubectl, fzf, stern
 EOF
 }
 
 NAMESPACE=""
 LINES=200
-FORMAT=""
+OUTPUT=""
+INCLUDE=""
+EXCLUDE=""
+HIGHLIGHT=""
 
 # --- last-selection cache ---
 
@@ -91,8 +101,20 @@ while [[ $# -gt 0 ]]; do
       LINES="$2"
       shift 2
       ;;
-    -f|--format)
-      FORMAT="$2"
+    -o|--output)
+      OUTPUT="$2"
+      shift 2
+      ;;
+    -i|--include)
+      INCLUDE="$2"
+      shift 2
+      ;;
+    -e|--exclude)
+      EXCLUDE="$2"
+      shift 2
+      ;;
+    -H|--highlight)
+      HIGHLIGHT="$2"
       shift 2
       ;;
     *)
@@ -105,20 +127,12 @@ done
 
 # --- dependency checks ---
 
-if ! command -v kubectl >/dev/null 2>&1; then
-  echo "error: kubectl is required" >&2
-  exit 127
-fi
-
-if ! command -v fzf >/dev/null 2>&1; then
-  echo "error: fzf is required. Install with: brew install fzf" >&2
-  exit 127
-fi
-
-if ! command -v jq >/dev/null 2>&1; then
-  echo "error: jq is required. Install with: brew install jq" >&2
-  exit 127
-fi
+for tool in kubectl fzf stern; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "error: $tool is required. Install with: brew install $tool" >&2
+    exit 127
+  fi
+done
 
 # --- namespace selection ---
 
@@ -139,7 +153,8 @@ echo "Namespace: $NAMESPACE" >&2
 
 # --- resource type selection ---
 
-RESOURCE_TYPES="pod
+RESOURCE_TYPES="deployment
+pod
 job"
 
 RESOURCE_TYPE=$(echo "$RESOURCE_TYPES" | fzf_with_last "$(cache_read resource_type)" "Resource type: ") || {
@@ -151,74 +166,75 @@ echo "Resource type: $RESOURCE_TYPE" >&2
 
 # --- resource selection ---
 
+CONTAINER_FLAG=()
+
 echo "Fetching ${RESOURCE_TYPE}s..." >&2
-RESOURCES=$(kubectl get "$RESOURCE_TYPE" -n "$NAMESPACE" -o custom-columns=NAME:.metadata.name --no-headers 2>/dev/null) || {
-  echo "error: failed to list ${RESOURCE_TYPE}s in namespace '$NAMESPACE'" >&2
-  exit 3
-}
+  RESOURCES=$(kubectl get "$RESOURCE_TYPE" -n "$NAMESPACE" -o custom-columns=NAME:.metadata.name --no-headers 2>/dev/null) || {
+    echo "error: failed to list ${RESOURCE_TYPE}s in namespace '$NAMESPACE'" >&2
+    exit 3
+  }
 
-if [[ -z "$RESOURCES" ]]; then
-  echo "error: no ${RESOURCE_TYPE}s found in namespace '$NAMESPACE'" >&2
-  exit 1
-fi
-
-LAST_RESOURCE=$(cache_read resource)
-if [[ "$RESOURCE_TYPE" == "pod" ]]; then
-  # Pods have ephemeral names — match by deployment prefix
-  RESOURCE_HINT=""
-  if [[ -n "$LAST_RESOURCE" ]]; then
-    RESOURCE_HINT=$(echo "$LAST_RESOURCE" | sed -E 's/-[a-f0-9]+-[a-z0-9]+$//' | sed -E 's/-[a-f0-9]{8,}$//')
+  if [[ -z "$RESOURCES" ]]; then
+    echo "error: no ${RESOURCE_TYPE}s found in namespace '$NAMESPACE'" >&2
+    exit 1
   fi
-  RESOURCE=$(echo "$RESOURCES" | fzf_with_last "$RESOURCE_HINT" "Select ${RESOURCE_TYPE}: " prefix) || {
-    echo "error: no ${RESOURCE_TYPE} selected" >&2
-    exit 1
-  }
-else
-  RESOURCE=$(echo "$RESOURCES" | fzf_with_last "$LAST_RESOURCE" "Select ${RESOURCE_TYPE}: ") || {
-    echo "error: no ${RESOURCE_TYPE} selected" >&2
-    exit 1
-  }
-fi
 
-# Build the target for kubectl logs
-if [[ "$RESOURCE_TYPE" == "pod" ]]; then
-  LOG_TARGET="$RESOURCE"
-else
-  LOG_TARGET="${RESOURCE_TYPE}/${RESOURCE}"
-fi
-
-echo "${RESOURCE_TYPE}: $RESOURCE" >&2
-
-# --- container selection (if multiple) ---
-
-CONTAINER_FLAG=""
-if [[ "$RESOURCE_TYPE" == "pod" ]]; then
-  CONTAINERS=$(kubectl get pod "$RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.containers[*].name}' | tr ' ' '\n')
-  CONTAINER_COUNT=$(echo "$CONTAINERS" | wc -l | tr -d ' ')
-
-  if [[ "$CONTAINER_COUNT" -gt 1 ]]; then
-    CONTAINER=$(echo "$CONTAINERS" | fzf_with_last "$(cache_read container)" "Select container: ") || {
-      echo "error: no container selected" >&2
+  LAST_RESOURCE=$(cache_read resource)
+  if [[ "$RESOURCE_TYPE" == "pod" ]]; then
+    # Pods have ephemeral names — match by deployment prefix
+    RESOURCE_HINT=""
+    if [[ -n "$LAST_RESOURCE" ]]; then
+      RESOURCE_HINT=$(echo "$LAST_RESOURCE" | sed -E 's/-[a-f0-9]+-[a-z0-9]+$//' | sed -E 's/-[a-f0-9]{8,}$//')
+    fi
+    RESOURCE=$(echo "$RESOURCES" | fzf_with_last "$RESOURCE_HINT" "Select ${RESOURCE_TYPE}: " prefix) || {
+      echo "error: no ${RESOURCE_TYPE} selected" >&2
       exit 1
     }
-    CONTAINER_FLAG="-c $CONTAINER"
-    echo "Container: $CONTAINER" >&2
+  else
+    RESOURCE=$(echo "$RESOURCES" | fzf_with_last "$LAST_RESOURCE" "Select ${RESOURCE_TYPE}: ") || {
+      echo "error: no ${RESOURCE_TYPE} selected" >&2
+      exit 1
+    }
   fi
-fi
 
-# --- format selection ---
+  echo "${RESOURCE_TYPE}: $RESOURCE" >&2
 
-if [[ -z "$FORMAT" ]]; then
-  FORMAT=$(printf "pretty\ncompact" | fzf_with_last "$(cache_read format)" "Output format: ") || {
+  # --- container selection (if multiple) ---
+
+  if [[ "$RESOURCE_TYPE" == "pod" ]]; then
+    CONTAINERS=$(kubectl get pod "$RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.containers[*].name}' | tr ' ' '\n')
+  elif [[ "$RESOURCE_TYPE" == "deployment" ]]; then
+    CONTAINERS=$(kubectl get deployment "$RESOURCE" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[*].name}' | tr ' ' '\n')
+  else
+    CONTAINERS=""
+  fi
+
+  if [[ -n "$CONTAINERS" ]]; then
+    CONTAINER_COUNT=$(echo "$CONTAINERS" | wc -l | tr -d ' ')
+
+    if [[ "$CONTAINER_COUNT" -gt 1 ]]; then
+      CONTAINER=$(echo "$CONTAINERS" | fzf_with_last "$(cache_read container)" "Select container: ") || {
+        echo "error: no container selected" >&2
+        exit 1
+      }
+      CONTAINER_FLAG=(--container "$CONTAINER")
+      echo "Container: $CONTAINER" >&2
+    fi
+  fi
+
+# --- output format selection ---
+
+if [[ -z "$OUTPUT" ]]; then
+  OUTPUT=$(printf "default\njson\nppextjson\nraw" | fzf_with_last "$(cache_read output)" "Output format: ") || {
     echo "error: no format selected" >&2
     exit 1
   }
 fi
 
-case "$FORMAT" in
-  pretty|compact) ;;
+case "$OUTPUT" in
+  default|json|ppextjson|raw) ;;
   *)
-    echo "error: unknown format '$FORMAT' (expected: pretty, compact)" >&2
+    echo "error: unknown output format '$OUTPUT' (expected: default, json, ppextjson, raw)" >&2
     exit 2
     ;;
 esac
@@ -234,26 +250,37 @@ MODE=$(printf "follow\ndump" | fzf_with_last "$(cache_read mode)" "Follow logs o
 
 cache_write namespace "$NAMESPACE"
 cache_write resource_type "$RESOURCE_TYPE"
-cache_write resource "$RESOURCE"
+[[ -n "${RESOURCE:-}" ]] && cache_write resource "$RESOURCE"
 [[ -n "${CONTAINER:-}" ]] && cache_write container "$CONTAINER"
-cache_write format "$FORMAT"
+cache_write output "$OUTPUT"
 cache_write mode "$MODE"
 
 echo "" >&2
 
-# Format log output — gracefully handles non-JSON lines
-JQ_TRYPARSE='def try_json: try fromjson; try_json // .'
-format_logs() {
-  case "$FORMAT" in
-    pretty)  jq -R -r "$JQ_TRYPARSE" ;;
-    compact) jq -c -R -r "$JQ_TRYPARSE" ;;
-  esac
-}
+# --- build stern command ---
 
-if [[ "$MODE" == "follow" ]]; then
-  # shellcheck disable=SC2086
-  kubectl logs -f "$LOG_TARGET" -n "$NAMESPACE" $CONTAINER_FLAG | format_logs
+STERN_ARGS=(-n "$NAMESPACE" --output "$OUTPUT" --tail "$LINES")
+
+if [[ "$RESOURCE_TYPE" == "pod" ]]; then
+  # Exact pod match — anchor the regex
+  STERN_ARGS+=("^${RESOURCE}$")
 else
-  # shellcheck disable=SC2086
-  kubectl logs --tail="$LINES" "$LOG_TARGET" -n "$NAMESPACE" $CONTAINER_FLAG | format_logs
+  # Deployment/job pods are named <resource>-<hash>, match by prefix
+  STERN_ARGS+=("^${RESOURCE}-")
 fi
+
+if [[ ${#CONTAINER_FLAG[@]} -gt 0 ]]; then
+  STERN_ARGS+=("${CONTAINER_FLAG[@]}")
+fi
+
+[[ -n "$INCLUDE" ]] && STERN_ARGS+=(--include "$INCLUDE")
+[[ -n "$EXCLUDE" ]] && STERN_ARGS+=(--exclude "$EXCLUDE")
+[[ -n "$HIGHLIGHT" ]] && STERN_ARGS+=(--highlight "$HIGHLIGHT")
+
+if [[ "$MODE" == "dump" ]]; then
+  STERN_ARGS+=(--no-follow)
+fi
+
+echo -e "\033[38;5;214mstern ${STERN_ARGS[*]}\033[0m" >&2
+echo "" >&2
+exec stern "${STERN_ARGS[@]}"

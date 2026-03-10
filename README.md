@@ -29,6 +29,7 @@ A curated collection of utility scripts for AWS, Kubernetes, lakeFS, and other d
 | **AWS CLI** | aws.* scripts | AWS operations | `brew install awscli` |
 | **saml2aws** | aws.login | AWS SAML authentication | `brew install saml2aws` |
 | **kubectl** | kube.connect, kube.logs, create.api.token | Kubernetes cluster access | `brew install kubectl` |
+| **stern** | kube.logs | Multi-pod log tailing | `brew install stern` |
 | **restish** | restish.prepare | REST API client | `brew install restish` |
 | **authenticator** | generate.mfa.token | TOTP token generation | `brew install authenticator` |
 
@@ -77,7 +78,7 @@ This makes all scripts callable by name from anywhere.
 - **aws.login** - Login to AWS profile and export credentials (auto-generates MFA token)
 - **aws.secret** - Retrieve AWS secrets with interactive profile selection
 - **kube.connect** - Update kubeconfig for an EKS cluster with interactive selection
-- **kube.logs** - Print logs of a Kubernetes pod (interactive pod selection, follow or dump, JSON formatting)
+- **kube.logs** - Tail logs of Kubernetes pods/jobs using stern (interactive selection, follow or dump)
 
 ### lakefs/
 

@@ -84,6 +84,7 @@ check_tool "bat" "optional"
 check_tool "aws" "optional" "awscli"
 check_tool "saml2aws" "optional"
 check_tool "kubectl" "optional"
+check_tool "stern" "optional"
 check_tool "restish" "optional"
 check_tool "authenticator" "optional"
 

@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Description: Port-forward ArgoCD and open it in Arc browser
+set -euo pipefail
+
+NAMESPACE="argocd"
+LOCAL_PORT=8080
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  argocd.open [--port PORT]
+
+Options:
+  --port PORT  Local port to forward to (default: 8080)
+
+Notes:
+  - Port-forwards argocd-server from the current kubectl context
+  - Retrieves the admin password from AWS Secrets Manager (via aws.secret)
+  - Copies the password to clipboard
+  - Opens the ArgoCD UI in Arc browser
+  - Requires: aws.secret, jq, kubectl
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --port)
+      LOCAL_PORT="$2"
+      shift 2
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+# Detect environment (staging/production) from kubectl context
+KUBE_CONTEXT=$(kubectl config current-context 2>/dev/null) || {
+  echo "error: no kubectl context set" >&2
+  exit 1
+}
+
+STAGING_ACCOUNT="127854500109"
+PRODUCTION_ACCOUNT="924819537486"
+
+if [[ "$KUBE_CONTEXT" == *"$STAGING_ACCOUNT"* || "$KUBE_CONTEXT" == *"staging"* ]]; then
+  SECRET_PREFIX="staging"
+elif [[ "$KUBE_CONTEXT" == *"$PRODUCTION_ACCOUNT"* || "$KUBE_CONTEXT" == *"production"* || "$KUBE_CONTEXT" == *"prod"* ]]; then
+  SECRET_PREFIX="prod"
+else
+  echo "error: cannot determine environment from kubectl context: $KUBE_CONTEXT" >&2
+  exit 1
+fi
+
+echo "Environment: $SECRET_PREFIX" >&2
+
+# Kill existing process on the port
+if lsof -ti :"$LOCAL_PORT" >/dev/null 2>&1; then
+  echo "Killing existing process on port $LOCAL_PORT..." >&2
+  kill $(lsof -ti :"$LOCAL_PORT") 2>/dev/null
+  sleep 0.5
+fi
+
+# Retrieve admin password from AWS Secrets Manager via aws.secret
+echo "Retrieving ArgoCD admin password..." >&2
+PASSWORD=$(aws.secret "${SECRET_PREFIX}/lakefscloud/argocd" | jq -r '.SecretString | fromjson | .password') || {
+  echo "error: failed to retrieve password from AWS Secrets Manager" >&2
+  exit 1
+}
+
+if [[ -z "$PASSWORD" || "$PASSWORD" == "null" ]]; then
+  echo "error: password field not found in secret ${SECRET_PREFIX}/lakefscloud/argocd" >&2
+  exit 1
+fi
+
+echo "$PASSWORD" | pbcopy
+echo "Admin password copied to clipboard." >&2
+
+# Start port-forward
+echo "Starting port-forward (argocd-server -> localhost:$LOCAL_PORT)..." >&2
+kubectl -n "$NAMESPACE" port-forward svc/argocd-server "$LOCAL_PORT:80" >/dev/null 2>&1 &
+PF_PID=$!
+echo "  port-forward pid: $PF_PID" >&2
+
+# Wait for it to be ready
+for i in $(seq 1 10); do
+  if curl -sf "http://localhost:${LOCAL_PORT}" >/dev/null 2>&1; then
+    break
+  fi
+  if ! kill -0 "$PF_PID" 2>/dev/null; then
+    echo "error: port-forward process died" >&2
+    exit 3
+  fi
+  if [[ $i -eq 10 ]]; then
+    echo "error: ArgoCD not ready after 10s" >&2
+    kill "$PF_PID" 2>/dev/null
+    exit 3
+  fi
+  sleep 1
+done
+
+# Open in Arc
+echo "Opening ArgoCD in Arc..." >&2
+open -a "Arc" "http://localhost:${LOCAL_PORT}"
+
+echo "" >&2
+echo "Done. Username: admin (password in clipboard)" >&2
+echo "To stop port-forward: kill $PF_PID" >&2
