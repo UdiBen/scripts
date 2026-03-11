@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+# Description: Run lakeFS locally in various modes (quickstart, custom config, webui hot reload)
+set -euo pipefail
+
+LAKEFS_REPO_DIR="${LAKEFS_REPO_DIR:-$HOME/code/treeverse/lakefs}"
+STATE_DIR="$HOME/.config/lakefs-run"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  lakefs.run [-h|--help]
+
+Interactively select a mode to run lakeFS locally:
+
+  Quickstart         Run with --quickstart (local DB, hardcoded creds)
+  Custom config      Run with a custom config file
+  WebUI hot reload   Vite dev server with optional backend
+
+Previous selections are remembered and pre-selected on next run.
+
+Environment:
+  LAKEFS_REPO_DIR    Path to the lakeFS repo (default: ~/code/treeverse/lakefs)
+EOF
+}
+
+if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+# --- Dependencies ---
+if ! command -v fzf >/dev/null 2>&1; then
+  echo "error: fzf is required. Install with: brew install fzf" >&2
+  exit 127
+fi
+
+# --- Validate repo ---
+if [[ ! -d "$LAKEFS_REPO_DIR/cmd/lakefs" ]]; then
+  echo "error: lakeFS repo not found at $LAKEFS_REPO_DIR (missing cmd/lakefs/)" >&2
+  echo "Set LAKEFS_REPO_DIR to the correct path" >&2
+  exit 1
+fi
+
+# --- fzf with last selection sorted to top ---
+fzf_with_last() {
+  local last="$1" prompt="$2"
+  local items
+  items=$(cat)
+  if [[ -n "$last" ]]; then
+    local matched rest
+    matched=$(echo "$items" | grep -xF "$last" | head -1) || true
+    if [[ -n "$matched" ]]; then
+      rest=$(echo "$items" | grep -vxF "$matched")
+      items="${matched}"$'\n'"${rest}"
+    fi
+  fi
+  echo "$items" | fzf --exact --prompt="$prompt" --height=~50% --reverse
+}
+
+# --- State helpers ---
+read_state() {
+  local file="$STATE_DIR/$1"
+  [[ -f "$file" ]] && cat "$file" || true
+}
+
+write_state() {
+  mkdir -p "$STATE_DIR"
+  printf '%s' "$2" > "$STATE_DIR/$1"
+}
+
+# --- Auto-build if needed ---
+ensure_binary() {
+  if [[ ! -f "$LAKEFS_REPO_DIR/lakefs" ]]; then
+    if ! command -v make >/dev/null 2>&1; then
+      echo "error: make is required to build lakeFS. Install with: xcode-select --install" >&2
+      exit 127
+    fi
+    echo "Binary not found, building lakeFS..." >&2
+    (cd "$LAKEFS_REPO_DIR" && make build) || {
+      echo "error: build failed" >&2
+      exit 3
+    }
+  fi
+}
+
+# --- Config path prompt ---
+prompt_config_path() {
+  local last_config
+  last_config=$(read_state "last-config")
+  local prompt="Config file path"
+  if [[ -n "$last_config" ]]; then
+    prompt="$prompt [$last_config]"
+  fi
+  printf '%s: ' "$prompt" >&2
+  local config_path
+  read -r config_path
+  config_path="${config_path:-$last_config}"
+  if [[ -z "$config_path" ]]; then
+    echo "error: no config path provided" >&2
+    exit 1
+  fi
+  # Expand ~ if present
+  config_path="${config_path/#\~/$HOME}"
+  if [[ ! -f "$config_path" ]]; then
+    echo "error: config file not found: $config_path" >&2
+    exit 1
+  fi
+  write_state "last-config" "$config_path"
+  echo "$config_path"
+}
+
+# --- Run backend ---
+run_quickstart() {
+  ensure_binary
+  echo "Starting lakeFS in quickstart mode..." >&2
+  cd "$LAKEFS_REPO_DIR"
+  exec ./lakefs run --quickstart
+}
+
+run_custom_config() {
+  local config_path="$1"
+  ensure_binary
+  echo "Starting lakeFS with config: $config_path" >&2
+  cd "$LAKEFS_REPO_DIR"
+  exec ./lakefs run -c "$config_path"
+}
+
+# --- WebUI hot reload ---
+run_webui() {
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "error: npm is required for WebUI hot reload. Install Node.js: brew install node" >&2
+    exit 127
+  fi
+
+  # Auto-install node_modules if missing
+  if [[ ! -d "$LAKEFS_REPO_DIR/webui/node_modules" ]]; then
+    echo "Installing webui dependencies..." >&2
+    (cd "$LAKEFS_REPO_DIR/webui" && npm install) || {
+      echo "error: npm install failed" >&2
+      exit 3
+    }
+  fi
+
+  # Ask about backend
+  local start_backend
+  start_backend=$(printf "Yes\nNo" | fzf --exact --prompt="Also start backend? " --height=~50% --reverse) || {
+    echo "error: no selection made" >&2
+    exit 1
+  }
+
+  if [[ "$start_backend" == "Yes" ]]; then
+    # Select backend mode
+    local backend_mode
+    backend_mode=$(printf "Quickstart\nCustom config" | fzf --exact --prompt="Backend mode: " --height=~50% --reverse) || {
+      echo "error: no selection made" >&2
+      exit 1
+    }
+
+    local config_path=""
+    if [[ "$backend_mode" == "Custom config" ]]; then
+      config_path=$(prompt_config_path)
+    fi
+
+    ensure_binary
+
+    # Start backend in background
+    echo "Starting lakeFS backend ($backend_mode)..." >&2
+    if [[ "$backend_mode" == "Quickstart" ]]; then
+      (cd "$LAKEFS_REPO_DIR" && ./lakefs run --quickstart) &
+    else
+      (cd "$LAKEFS_REPO_DIR" && ./lakefs run -c "$config_path") &
+    fi
+    local backend_pid=$!
+
+    # Cleanup on exit
+    cleanup() {
+      echo "" >&2
+      echo "Stopping backend (PID $backend_pid)..." >&2
+      kill "$backend_pid" 2>/dev/null || true
+      wait "$backend_pid" 2>/dev/null || true
+    }
+    trap cleanup EXIT INT TERM
+
+    echo "Starting Vite dev server..." >&2
+    (cd "$LAKEFS_REPO_DIR/webui" && npm run dev)
+  else
+    echo "Starting Vite dev server (no backend)..." >&2
+    cd "$LAKEFS_REPO_DIR/webui"
+    exec npm run dev
+  fi
+}
+
+# --- Mode selection ---
+MODES="Quickstart
+Custom config
+WebUI hot reload"
+
+LAST_MODE=$(read_state "last-mode")
+
+MODE=$(echo "$MODES" | fzf_with_last "$LAST_MODE" "Run mode: ") || {
+  echo "error: no mode selected" >&2
+  exit 1
+}
+
+write_state "last-mode" "$MODE"
+
+case "$MODE" in
+  "Quickstart")
+    run_quickstart
+    ;;
+  "Custom config")
+    config_path=$(prompt_config_path)
+    run_custom_config "$config_path"
+    ;;
+  "WebUI hot reload")
+    run_webui
+    ;;
+esac

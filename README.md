@@ -32,6 +32,8 @@ A curated collection of utility scripts for AWS, Kubernetes, lakeFS, and other d
 | **stern** | kube.logs | Multi-pod log tailing | `brew install stern` |
 | **restish** | restish.prepare | REST API client | `brew install restish` |
 | **authenticator** | generate.mfa.token | TOTP token generation | `brew install authenticator` |
+| **make** | lakefs.run | Build lakeFS binary | `xcode-select --install` |
+| **node/npm** | lakefs.run | WebUI hot reload | `brew install node` |
 
 ## Installation
 
@@ -87,6 +89,7 @@ This makes all scripts callable by name from anywhere.
 - **restish.prepare** - Set up restish for admin and giam APIs with tokens and port-forwarding
 - **lakectl.set** - Set active lakectl configuration profile
 - **lakectl.cat** - Display lakectl config with syntax highlighting
+- **lakefs.run** - Run lakeFS locally in various modes (quickstart, custom config, webui hot reload)
 
 ### common/
 
@@ -215,7 +218,8 @@ All scripts follow these conventions:
 │   ├── mirrord.prepare    # mirrord session setup
 │   ├── restish.prepare    # REST API setup
 │   ├── lakectl.set        # lakeFS profile switcher
-│   └── lakectl.cat        # lakeFS config viewer
+│   ├── lakectl.cat        # lakeFS config viewer
+│   └── lakefs.run         # Local lakeFS runner
 └── common/
     ├── generate.mfa.token # MFA token generation
     └── add.alias          # Alias management
