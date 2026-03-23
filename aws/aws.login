@@ -54,8 +54,9 @@ else
     exit 127
   fi
 
-  profiles=$(aws configure list-profiles 2>/dev/null) || {
-    echo "error: failed to list AWS profiles" >&2
+  # Only show profiles that have a saml2aws account configured
+  profiles=$(grep '^\[' ~/.saml2aws 2>/dev/null | tr -d '[]') || {
+    echo "error: failed to list AWS profiles from ~/.saml2aws" >&2
     exit 1
   }
 
@@ -138,6 +139,11 @@ fi
 
 printf 'export AWS_PROFILE=%q\n' "$profile"
 printf 'export AWS_DEFAULT_PROFILE=%q\n' "$profile"
+
+# Resolve region: explicit flag > credentials file > aws config
+if [[ -z "$region" ]]; then
+  region=$(aws configure get region --profile "$profile" 2>/dev/null) || true
+fi
 
 if [[ -n "$region" ]]; then
   printf 'export AWS_REGION=%q\n' "$region"

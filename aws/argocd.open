@@ -110,5 +110,7 @@ echo "Opening ArgoCD in Arc..." >&2
 open -a "Arc" "http://localhost:${LOCAL_PORT}"
 
 echo "" >&2
-echo "Done. Username: admin (password in clipboard)" >&2
+echo "Username: admin" >&2
+echo "Password: copied to clipboard" >&2
+echo "" >&2
 echo "To stop port-forward: kill $PF_PID" >&2
