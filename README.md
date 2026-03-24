@@ -95,6 +95,7 @@ This makes all scripts callable by name from anywhere.
 
 - **generate.mfa.token** - Generate a JumpCloud MFA token, copy to clipboard
 - **add.alias** - Add a new alias to ~/.aliases and reload .zshrc
+- **kill.process** - Kill a process interactively using fzf (optional grep filter)
 
 ### Root
 
@@ -222,7 +223,8 @@ All scripts follow these conventions:
 │   └── lakefs.run         # Local lakeFS runner
 └── common/
     ├── generate.mfa.token # MFA token generation
-    └── add.alias          # Alias management
+    ├── add.alias          # Alias management
+    └── kill.process       # Interactive process killer
 ```
 
 ## Troubleshooting

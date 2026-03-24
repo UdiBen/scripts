@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Description: Kill a process interactively using fzf (optional grep filter)
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  kill.process [filter]
+
+Arguments:
+  filter    Optional string to filter processes (grep pattern)
+
+Options:
+  -h, --help    Show this help
+
+Examples:
+  kill.process              # show all processes, select one to kill
+  kill.process node         # show only processes matching "node"
+  kill.process "python.*server"  # filter with regex
+
+Requires:
+  fzf
+EOF
+}
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+esac
+
+if ! command -v fzf >/dev/null 2>&1; then
+  echo "error: fzf is required. Install with: brew install fzf" >&2
+  exit 127
+fi
+
+FILTER="${1:-}"
+
+PS_TMPFILE=$(mktemp)
+trap 'rm -f "$PS_TMPFILE"' EXIT
+ps -ef > "$PS_TMPFILE"
+
+HEADER=$(head -1 "$PS_TMPFILE")
+
+if [[ -n "$FILTER" ]]; then
+  PROCESSES=$(tail -n +2 "$PS_TMPFILE" | grep -v "kill\.process" | grep "$FILTER" || true)
+else
+  PROCESSES=$(tail -n +2 "$PS_TMPFILE" | grep -v "kill\.process")
+fi
+
+if [[ -z "$PROCESSES" ]]; then
+  echo "error: no processes found${FILTER:+ matching '$FILTER'}" >&2
+  exit 1
+fi
+
+SELECTED=$(echo "$PROCESSES" | fzf --exact --height=~50% --reverse --prompt="Select process to kill: " --header="$HEADER") || {
+  echo "error: no process selected" >&2
+  exit 1
+}
+
+PID=$(echo "$SELECTED" | awk '{print $2}')
+echo "Killing PID $PID..." >&2
+echo "$SELECTED" >&2
+kill -9 "$PID"
+echo "Process $PID killed." >&2

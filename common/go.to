@@ -1,0 +1,42 @@
+#!/bin/zsh
+# Description: Fuzzy-select a common directory and cd into it
+# Usage: source this file, or add `go.to` as a function in your shell
+
+go.to() {
+  local dirs=(
+    "$HOME/code/treeverse/lakeFS"
+    "$HOME/code/treeverse/lakeFS-Enterprise"
+    "$HOME/code/treeverse/cloud-controlplane"
+    "$HOME/scripts"
+    "$HOME/git-custom-commands"
+  )
+
+  # Build display list: short label → full path
+  local entries=()
+  for d in "${dirs[@]}"; do
+    [[ -d "$d" ]] || continue
+    entries+=("$(basename "$d")|$d")
+  done
+
+  if (( ${#entries} == 0 )); then
+    echo "No directories found" >&2
+    return 1
+  fi
+
+  if ! command -v fzf >/dev/null 2>&1; then
+    echo "error: fzf is required. Install with: brew install fzf" >&2
+    return 127
+  fi
+
+  local selection
+  selection=$(printf '%s\n' "${entries[@]}" | awk -F'|' '{printf "%-28s %s\n", $1, $2}' \
+    | fzf --exact --prompt="Go to: " --height=~50% --reverse) || {
+    echo "No directory selected" >&2
+    return 1
+  }
+
+  local target
+  target=$(echo "$selection" | awk '{print $NF}')
+
+  cd "$target" && echo "→ $target"
+}
