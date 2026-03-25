@@ -3,6 +3,7 @@
 set -euo pipefail
 
 LAKEFS_REPO_DIR="${LAKEFS_REPO_DIR:-$HOME/code/treeverse/lakefs}"
+LAKEFS_CONFIG_DIR="${HOME}/code/treeverse/config/lakefs"
 STATE_DIR="$HOME/.config/lakefs-run"
 
 usage() {
@@ -12,9 +13,9 @@ Usage:
 
 Interactively select a mode to run lakeFS locally:
 
-  Quickstart         Run with --quickstart (local DB, hardcoded creds)
-  Custom config      Run with a custom config file
-  WebUI hot reload   Vite dev server with optional backend
+  Quickstart           Run with --quickstart (local DB, hardcoded creds)
+  <config>.yaml        Run with a config from ~/code/treeverse/config/lakefs/
+  WebUI hot reload     Vite dev server with optional backend
 
 Previous selections are remembered and pre-selected on next run.
 
@@ -83,30 +84,16 @@ ensure_binary() {
   fi
 }
 
-# --- Config path prompt ---
-prompt_config_path() {
-  local last_config
-  last_config=$(read_state "last-config")
-  local prompt="Config file path"
-  if [[ -n "$last_config" ]]; then
-    prompt="$prompt [$last_config]"
+# --- Build mode list ---
+build_modes() {
+  echo "Quickstart"
+  if [[ -d "$LAKEFS_CONFIG_DIR" ]]; then
+    for f in "$LAKEFS_CONFIG_DIR"/*.yaml; do
+      [[ -f "$f" ]] || continue
+      basename "$f"
+    done
   fi
-  printf '%s: ' "$prompt" >&2
-  local config_path
-  read -r config_path
-  config_path="${config_path:-$last_config}"
-  if [[ -z "$config_path" ]]; then
-    echo "error: no config path provided" >&2
-    exit 1
-  fi
-  # Expand ~ if present
-  config_path="${config_path/#\~/$HOME}"
-  if [[ ! -f "$config_path" ]]; then
-    echo "error: config file not found: $config_path" >&2
-    exit 1
-  fi
-  write_state "last-config" "$config_path"
-  echo "$config_path"
+  echo "WebUI hot reload"
 }
 
 # --- Run backend ---
@@ -117,7 +104,7 @@ run_quickstart() {
   exec ./lakefs run --quickstart
 }
 
-run_custom_config() {
+run_with_config() {
   local config_path="$1"
   ensure_binary
   echo "Starting lakeFS with config: $config_path" >&2
@@ -149,17 +136,15 @@ run_webui() {
   }
 
   if [[ "$start_backend" == "Yes" ]]; then
-    # Select backend mode
+    # Reuse mode selection for backend (excluding WebUI)
+    local backend_modes
+    backend_modes=$(build_modes | grep -v "WebUI hot reload")
+
     local backend_mode
-    backend_mode=$(printf "Quickstart\nCustom config" | fzf --exact --prompt="Backend mode: " --height=~50% --reverse) || {
+    backend_mode=$(echo "$backend_modes" | fzf --exact --prompt="Backend mode: " --height=~50% --reverse) || {
       echo "error: no selection made" >&2
       exit 1
     }
-
-    local config_path=""
-    if [[ "$backend_mode" == "Custom config" ]]; then
-      config_path=$(prompt_config_path)
-    fi
 
     ensure_binary
 
@@ -168,7 +153,7 @@ run_webui() {
     if [[ "$backend_mode" == "Quickstart" ]]; then
       (cd "$LAKEFS_REPO_DIR" && ./lakefs run --quickstart) &
     else
-      (cd "$LAKEFS_REPO_DIR" && ./lakefs run -c "$config_path") &
+      (cd "$LAKEFS_REPO_DIR" && ./lakefs run -c "$LAKEFS_CONFIG_DIR/$backend_mode") &
     fi
     local backend_pid=$!
 
@@ -191,10 +176,7 @@ run_webui() {
 }
 
 # --- Mode selection ---
-MODES="Quickstart
-Custom config
-WebUI hot reload"
-
+MODES=$(build_modes)
 LAST_MODE=$(read_state "last-mode")
 
 MODE=$(echo "$MODES" | fzf_with_last "$LAST_MODE" "Run mode: ") || {
@@ -208,11 +190,10 @@ case "$MODE" in
   "Quickstart")
     run_quickstart
     ;;
-  "Custom config")
-    config_path=$(prompt_config_path)
-    run_custom_config "$config_path"
-    ;;
   "WebUI hot reload")
     run_webui
+    ;;
+  *.yaml)
+    run_with_config "$LAKEFS_CONFIG_DIR/$MODE"
     ;;
 esac

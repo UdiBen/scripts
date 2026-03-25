@@ -1,22 +1,29 @@
 #!/usr/bin/env bash
-# Description: Set active lakectl configuration profile
+# Description: Set active lakectl configuration profile (static configs or K8s dev environment)
 set -euo pipefail
 
-CONFIG_DIR="${HOME}/code/treeverse/config"
+CONFIG_DIR="${HOME}/code/treeverse/config/lakectl"
+STATE_FILE="$HOME/.config/lakectl-set/last"
+DEVENV_STATE_FILE="$HOME/.config/lakectl-set/last-devenv-ns"
+DEPLOY_LABEL="app.kubernetes.io/name=lakefs"
+DEVENV_OPTION="Dev environment"
 
 usage() {
-  echo "Usage: lakectl-set [profile]" >&2
-  echo "       lakectl-set --list" >&2
-  echo "Example: lakectl-set dev" >&2
-  echo "If no profile is provided, an interactive selector will be shown (requires fzf)." >&2
-}
+  cat >&2 <<'EOF'
+Usage: lakectl.set [profile]
+       lakectl.set --list
 
-list_profiles() {
-  echo "Available profiles:"
-  for f in "$CONFIG_DIR"/*.yaml; do
-    [[ -f "$f" ]] || continue
-    basename "$f" .yaml
-  done
+Set active lakectl configuration by selecting a static profile from
+~/code/treeverse/config/lakectl/ or by connecting to a K8s dev environment.
+
+Options:
+  -l, --list    List available profiles
+  -h, --help    Show this help
+
+If no profile is provided, an interactive selector will be shown (requires fzf).
+The "Dev environment" option discovers lakefs-dev-* namespaces, creates admin
+credentials via kubectl exec, and configures lakectl to work against it.
+EOF
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -24,14 +31,21 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
+list_profiles() {
+  echo "Available profiles:"
+  for f in "$CONFIG_DIR"/*.yaml; do
+    [[ -f "$f" ]] || continue
+    basename "$f" .yaml
+  done
+  echo "$DEVENV_OPTION"
+}
+
 if [[ "${1:-}" == "--list" || "${1:-}" == "-l" ]]; then
   list_profiles
   exit 0
 fi
 
-STATE_FILE="$HOME/.config/lakectl-set/last"
-
-# fzf with last selection sorted to the top of the list
+# --- fzf with last selection sorted to top ---
 fzf_with_last() {
   local last="$1" prompt="$2"
   local items
@@ -47,50 +61,157 @@ fzf_with_last() {
   echo "$items" | fzf --exact --prompt="$prompt" --height=~50% --reverse
 }
 
-if [[ -n "${1:-}" ]]; then
-  profile="$1"
-else
-  # Interactive profile selection with fzf
-  if ! command -v fzf >/dev/null 2>&1; then
-    echo "error: fzf is required for interactive selection. Install with: brew install fzf" >&2
-    exit 127
+# --- Activate a static profile ---
+activate_profile() {
+  local profile="$1"
+  local src="${CONFIG_DIR}/${profile}.yaml"
+  local dst="${HOME}/.lakectl.yaml"
+
+  if [[ ! -f "$src" ]]; then
+    echo "error: config not found: $src" >&2
+    exit 2
   fi
 
-  profiles=""
-  for f in "$CONFIG_DIR"/*.yaml; do
-    [[ -f "$f" ]] || continue
-    profiles+="$(basename "$f" .yaml)"$'\n'
+  cp -f "$src" "$dst"
+  echo "Set lakectl config: $dst <- $src"
+}
+
+# --- Connect to a K8s dev environment ---
+activate_devenv() {
+  for cmd in kubectl fzf; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      echo "error: $cmd is required. Install with: brew install $cmd" >&2
+      exit 127
+    fi
   done
-  profiles="${profiles%$'\n'}"  # remove trailing newline
 
-  if [[ -z "$profiles" ]]; then
-    echo "error: no profiles found in $CONFIG_DIR" >&2
-    exit 1
+  # Find dev env namespaces
+  local dev_namespaces
+  dev_namespaces=$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep '^lakefs-dev-') || true
+
+  if [[ -z "$dev_namespaces" ]]; then
+    echo "error: no lakefs-dev-* namespaces found in current kubectl context" >&2
+    echo "hint: are you connected to the right cluster? (use kube.connect)" >&2
+    exit 2
   fi
 
-  PROFILE_COUNT=$(echo "$profiles" | wc -l | tr -d ' ')
-  if [[ "$PROFILE_COUNT" -eq 1 ]]; then
-    profile="$profiles"
+  # Select namespace
+  local namespace
+  local ns_count
+  ns_count=$(echo "$dev_namespaces" | wc -l | tr -d ' ')
+  if [[ "$ns_count" -eq 1 ]]; then
+    namespace="$dev_namespaces"
   else
-    LAST_PROFILE=""
-    [[ -f "$STATE_FILE" ]] && LAST_PROFILE=$(cat "$STATE_FILE")
-    profile=$(echo "$profiles" | fzf_with_last "$LAST_PROFILE" "Select lakectl profile: ") || {
-      echo "error: no profile selected" >&2
+    local last_ns=""
+    [[ -f "$DEVENV_STATE_FILE" ]] && last_ns=$(cat "$DEVENV_STATE_FILE")
+    namespace=$(echo "$dev_namespaces" | fzf_with_last "$last_ns" "Select dev environment: ") || {
+      echo "error: no environment selected" >&2
       exit 1
     }
   fi
+
+  # Extract region from kubectl context (arn:aws:eks:<region>:<account>:cluster/<name>)
+  local region
+  region=$(kubectl config current-context | awk -F: '{print $4}')
+  if [[ -z "$region" ]]; then
+    echo "error: could not determine region from kubectl context" >&2
+    exit 3
+  fi
+
+  local endpoint="https://${namespace}.${region}.lakefscloud.ninja"
+
+  echo "Dev environment: $namespace" >&2
+  echo "Endpoint:        $endpoint" >&2
+
+  # Save namespace selection
+  mkdir -p "$(dirname "$DEVENV_STATE_FILE")"
+  echo "$namespace" > "$DEVENV_STATE_FILE"
+
+  # Find the lakeFS deployment name
+  local deploy
+  deploy=$(kubectl get deploy -n "$namespace" -l "$DEPLOY_LABEL" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null) || true
+  if [[ -z "$deploy" ]]; then
+    deploy="$namespace"
+  fi
+
+  # Create admin credentials via kubectl exec
+  echo "Creating credentials..." >&2
+  local user_name="lakectl-$(date +%s)"
+
+  local creds_output
+  creds_output=$(kubectl exec -n "$namespace" "deploy/$deploy" -- /app/lakefs superuser --user-name "$user_name" 2>/dev/null) || {
+    echo "error: failed to create credentials via kubectl exec" >&2
+    echo "hint: is the lakeFS pod running? (kubectl get pods -n $namespace)" >&2
+    exit 4
+  }
+
+  local access_key secret_key
+  access_key=$(echo "$creds_output" | grep 'access_key_id:' | awk '{print $2}')
+  secret_key=$(echo "$creds_output" | grep 'secret_access_key:' | awk '{print $2}')
+
+  if [[ -z "$access_key" || -z "$secret_key" ]]; then
+    echo "error: could not parse credentials from lakefs superuser output" >&2
+    echo "$creds_output" >&2
+    exit 5
+  fi
+
+  # Write lakectl config
+  cat > "$CONFIG_DIR/devenv.yaml" <<EOF
+# lakectl dev environment configuration (auto-generated by lakectl.set)
+# Dev env: ${namespace}
+# Created: $(date -Iseconds)
+server:
+    endpoint_url: ${endpoint}/api/v1
+
+credentials:
+    access_key_id: ${access_key}
+    secret_access_key: ${secret_key}
+EOF
+
+  cp -f "$CONFIG_DIR/devenv.yaml" "$HOME/.lakectl.yaml"
+
+  echo "" >&2
+  echo "Configured lakectl -> $endpoint" >&2
+  echo "  access_key_id:     $access_key" >&2
+  echo "  secret_access_key: ${secret_key:0:4}...${secret_key: -4}" >&2
+}
+
+# --- Direct argument mode ---
+if [[ -n "${1:-}" ]]; then
+  profile="$1"
+  mkdir -p "$(dirname "$STATE_FILE")"
+  echo "$profile" > "$STATE_FILE"
+  activate_profile "$profile"
+  exit 0
 fi
+
+# --- Interactive selection ---
+if ! command -v fzf >/dev/null 2>&1; then
+  echo "error: fzf is required for interactive selection. Install with: brew install fzf" >&2
+  exit 127
+fi
+
+options=""
+for f in "$CONFIG_DIR"/*.yaml; do
+  [[ -f "$f" ]] || continue
+  options+="$(basename "$f" .yaml)"$'\n'
+done
+options+="$DEVENV_OPTION"
+
+LAST_PROFILE=""
+[[ -f "$STATE_FILE" ]] && LAST_PROFILE=$(cat "$STATE_FILE")
+
+profile=$(echo "$options" | fzf_with_last "$LAST_PROFILE" "Select lakectl profile: ") || {
+  echo "error: no profile selected" >&2
+  exit 1
+}
 
 # Save selection
 mkdir -p "$(dirname "$STATE_FILE")"
 echo "$profile" > "$STATE_FILE"
-src="${CONFIG_DIR}/${profile}.yaml"
-dst="${HOME}/.lakectl.yaml"
 
-if [[ ! -f "$src" ]]; then
-  echo "Error: config not found: $src" >&2
-  exit 2
+if [[ "$profile" == "$DEVENV_OPTION" ]]; then
+  activate_devenv
+else
+  activate_profile "$profile"
 fi
-
-cp -f "$src" "$dst"
-echo "Set lakectl config: $dst <- $src"

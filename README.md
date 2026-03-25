@@ -87,7 +87,7 @@ This makes all scripts callable by name from anywhere.
 - **create.api.token** - Create a JWT token for a dev control-plane namespace
 - **mirrord.prepare** - Configure and prepare a local mirrord session against a remote control-plane dev environment
 - **restish.prepare** - Set up restish for admin and giam APIs with tokens and port-forwarding
-- **lakectl.set** - Set active lakectl configuration profile
+- **lakectl.set** - Set active lakectl configuration profile (static configs or K8s dev environment)
 - **lakectl.cat** - Display lakectl config with syntax highlighting
 - **lakefs.run** - Run lakeFS locally in various modes (quickstart, custom config, webui hot reload)
 
@@ -169,10 +169,11 @@ Scripts expect AWS profiles configured via saml2aws (`~/.saml2aws`) and AWS conf
 
 ### lakeFS Configuration
 
-The `lakectl.set` script expects YAML config files in:
+Configuration files are stored in subdirectories under `~/code/treeverse/config/`:
 
 ```
-~/code/treeverse/config/*.yaml
+~/code/treeverse/config/lakectl/    # lakectl client configs (used by lakectl.set)
+~/code/treeverse/config/lakefs/     # lakeFS server configs (used by lakefs.run)
 ```
 
 ### MFA Token
@@ -218,7 +219,7 @@ All scripts follow these conventions:
 │   ├── create.api.token   # JWT token generation
 │   ├── mirrord.prepare    # mirrord session setup
 │   ├── restish.prepare    # REST API setup
-│   ├── lakectl.set        # lakeFS profile switcher
+│   ├── lakectl.set        # lakeFS profile switcher (+ dev environment)
 │   ├── lakectl.cat        # lakeFS config viewer
 │   └── lakefs.run         # Local lakeFS runner
 └── common/
@@ -253,4 +254,4 @@ kube.connect
 
 ### lakectl Config Not Found
 
-Create config files in `~/code/treeverse/config/` or adjust `CONFIG_DIR` in `lakectl.set`.
+Create config files in `~/code/treeverse/config/lakectl/` or adjust `CONFIG_DIR` in `lakectl.set`.
