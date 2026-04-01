@@ -7,6 +7,8 @@ go.to() {
     "$HOME/code/treeverse/lakeFS"
     "$HOME/code/treeverse/lakeFS-Enterprise"
     "$HOME/code/treeverse/cloud-controlplane"
+    "$HOME/code/treeverse/dev"
+    "$HOME/code/treeverse/knowledge"
     "$HOME/scripts"
     "$HOME/git-custom-commands"
   )
