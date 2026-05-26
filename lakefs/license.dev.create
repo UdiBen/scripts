@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+# Description: Create a 14-day dev license JWT, auto-detecting installation ID from the latest lakefs log
+set -euo pipefail
+
+LAKEFS_ENTERPRISE_DIR="${LAKEFS_ENTERPRISE_DIR:-$HOME/code/treeverse/lakeFS-Enterprise}"
+LAKEFS_CONFIG_DIR="${LAKEFS_CONFIG_DIR:-$HOME/code/treeverse/config/lakefs}"
+DEFAULT_OUTPUT="/tmp/lakefs-dev-license.jwt"
+LOG_GLOB_DIRS=(/tmp)
+
+usage() {
+  cat >&2 <<EOF
+Usage:
+  license.dev.create [--installation-id <id>] [--output <path>] [--pick] [--yes]
+
+Creates a development lakeFS license token (14-day validity) signed with the
+non-production key fetched from AWS Secrets Manager.
+
+By default, auto-detects the active installation ID from the most recently
+written lakefs log line "current installation ID: <uuid>". This is what
+lakefs actually reads from its KV store at startup.
+
+Options:
+  --installation-id <id>   Use this ID (skip auto-detect and picker).
+  --output <path>          Where to write the token (default: $DEFAULT_OUTPUT,
+                           symlinks are followed).
+  --pick                   Skip auto-detect; always show the fzf picker.
+  --yes                    Skip auto-detect confirmation prompt.
+  -h, --help               Show this help.
+
+Environment:
+  LAKEFS_ENTERPRISE_DIR    Path to lakeFS-Enterprise repo with built ./license
+                           binary (default: ~/code/treeverse/lakeFS-Enterprise)
+  LAKEFS_CONFIG_DIR        Where to scan for fixed_id entries in *.yaml configs
+                           (default: ~/code/treeverse/config/lakefs)
+
+Requires active AWS credentials. If missing, run: eval "\$(aws.login)"
+EOF
+}
+
+# --- Args ---
+INSTALLATION_ID=""
+OUTPUT="$DEFAULT_OUTPUT"
+FORCE_PICK=0
+ASSUME_YES=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --installation-id) INSTALLATION_ID="${2:-}"; shift 2 ;;
+    --output) OUTPUT="${2:-}"; shift 2 ;;
+    --pick) FORCE_PICK=1; shift ;;
+    --yes|-y) ASSUME_YES=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "error: unknown arg: $1" >&2; usage; exit 2 ;;
+  esac
+done
+
+# --- Dependencies ---
+for cmd in fzf jq aws base64 awk; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo "error: $cmd is required" >&2; exit 127; }
+done
+
+# --- Pre-flight: license binary ---
+LICENSE_BIN="$LAKEFS_ENTERPRISE_DIR/license"
+if [[ ! -x "$LICENSE_BIN" ]]; then
+  echo "error: license binary not found at $LICENSE_BIN" >&2
+  echo "build it: (cd $LAKEFS_ENTERPRISE_DIR && make build-license)" >&2
+  exit 1
+fi
+
+# --- Pre-flight: AWS creds ---
+if ! aws sts get-caller-identity >/dev/null 2>&1; then
+  echo "error: AWS credentials missing or expired" >&2
+  echo "run: eval \"\$(aws.login)\"" >&2
+  exit 1
+fi
+
+# --- UUID regex (anchored & inline variants) ---
+UUID_RE='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+
+# --- Decode a JWT payload to JSON (base64url, no padding) ---
+jwt_payload() {
+  local jwt b64 pad
+  jwt=$(< "$1")
+  b64=$(awk -F. '{print $2}' <<<"$jwt")
+  b64="${b64//-/+}"; b64="${b64//_/\/}"
+  pad=$(( (4 - ${#b64} % 4) % 4 ))
+  (( pad > 0 )) && b64="${b64}$(printf '=%.0s' $(seq 1 "$pad"))"
+  base64 -d <<<"$b64" 2>/dev/null
+}
+
+# --- List candidate log files, newest first ---
+list_log_files() {
+  local d
+  for d in "${LOG_GLOB_DIRS[@]}"; do
+    [[ -d "$d" ]] || continue
+    # macOS ls -t accepts globs; suppress "no match" via shopt
+    /bin/ls -1t "$d"/*/lakefs*.log 2>/dev/null || true
+  done
+}
+
+# --- "Friendly" age string for a file (e.g. "3m", "2h", "yesterday") ---
+file_age() {
+  local f="$1" mtime now delta
+  mtime=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) || { echo "?"; return; }
+  now=$(date +%s)
+  delta=$(( now - mtime ))
+  if   (( delta < 60 ));   then echo "${delta}s ago"
+  elif (( delta < 3600 )); then echo "$((delta/60))m ago"
+  elif (( delta < 86400 ));then echo "$((delta/3600))h ago"
+  else echo "$((delta/86400))d ago"
+  fi
+}
+
+# --- B: auto-detect from newest log file with "current installation ID:" ---
+# echoes "<id>\t<log_path>\t<age>" or returns 1
+autodetect_current_id() {
+  local f id
+  while IFS= read -r f; do
+    [[ -n "$f" && -f "$f" ]] || continue
+    id=$(grep -oE "current installation ID: $UUID_RE" "$f" | tail -1 | grep -oE "$UUID_RE") || true
+    if [[ -n "$id" ]]; then
+      printf '%s\t%s\t%s\n' "$id" "$f" "$(file_age "$f")"
+      return 0
+    fi
+  done < <(list_log_files)
+  return 1
+}
+
+# --- A: harvest all candidates from logs, JWTs, and configs ---
+# Output: <id>\t<label>  (newest log entries first; configs flagged as first-boot only)
+harvest_ids() {
+  local f id age
+
+  # 1. Logs (newest first)
+  local first=1
+  while IFS= read -r f; do
+    [[ -n "$f" && -f "$f" ]] || continue
+    id=$(grep -oE "current installation ID: $UUID_RE" "$f" | tail -1 | grep -oE "$UUID_RE") || true
+    if [[ -n "$id" ]]; then
+      age=$(file_age "$f")
+      if (( first )); then
+        printf '%s\t%s  ← current (log: %s, %s)\n' "$id" "$id" "$(basename "$(dirname "$f")")/$(basename "$f")" "$age"
+        first=0
+      else
+        printf '%s\t%s  log: %s, %s\n' "$id" "$id" "$(basename "$(dirname "$f")")/$(basename "$f")" "$age"
+      fi
+    fi
+  done < <(list_log_files)
+
+  # 2. installation_id claim from existing license JWTs
+  for f in /tmp/*.jwt /tmp/*/license.jwt /tmp/*/*.jwt; do
+    [[ -f "$f" ]] || continue
+    id=$(jwt_payload "$f" | jq -r '.installation_id // empty' 2>/dev/null) || true
+    [[ -n "$id" ]] && printf '%s\t%s  jwt: %s\n' "$id" "$id" "$f"
+  done
+
+  # 3. fixed_id in yaml configs (lowest priority — only used on first boot)
+  if [[ -d "$LAKEFS_CONFIG_DIR" ]]; then
+    for f in "$LAKEFS_CONFIG_DIR"/*.yaml; do
+      [[ -f "$f" ]] || continue
+      id=$(grep -E '^\s*fixed_id:' "$f" 2>/dev/null | grep -oE "$UUID_RE" | head -1) || true
+      [[ -n "$id" ]] && printf '%s\t%s  config: %s (only honored on first boot)\n' "$id" "$id" "$(basename "$f")"
+    done
+  fi
+}
+
+# --- Pick installation ID via fzf, with --print-query allowing manual entry ---
+pick_with_fzf() {
+  local candidates selected query match
+  candidates=$(harvest_ids | awk -F'\t' '!seen[$1]++ {print}' || true)
+  if [[ -z "$candidates" ]]; then
+    echo "warning: no installation IDs harvested locally" >&2
+    read -r -p "Enter installation ID: " query
+    echo "$query"
+    return
+  fi
+  selected=$(printf '%s\n' "$candidates" | fzf \
+    --delimiter=$'\t' --with-nth=2 \
+    --height=~60% --reverse \
+    --prompt='installation id: ' \
+    --header='enter to pick, type to filter or supply a new id, ctrl-c to abort' \
+    --print-query) || { echo "error: aborted" >&2; exit 130; }
+  query=$(awk 'NR==1' <<<"$selected")
+  match=$(awk 'NR==2' <<<"$selected")
+  if [[ -n "$match" ]]; then
+    awk -F'\t' '{print $1}' <<<"$match"
+  else
+    echo "$query"
+  fi
+}
+
+# --- Resolve installation ID: explicit > auto-detect > fzf ---
+if [[ -z "$INSTALLATION_ID" ]]; then
+  if (( FORCE_PICK )); then
+    INSTALLATION_ID=$(pick_with_fzf)
+  else
+    if auto=$(autodetect_current_id); then
+      INSTALLATION_ID=$(awk -F'\t' '{print $1}' <<<"$auto")
+      log_path=$(awk -F'\t' '{print $2}' <<<"$auto")
+      log_age=$(awk -F'\t' '{print $3}' <<<"$auto")
+      echo "detected current installation ID: $INSTALLATION_ID" >&2
+      echo "  from: $log_path ($log_age)" >&2
+      if ! (( ASSUME_YES )); then
+        read -r -p "use it? [Y/n/p=pick] " ans
+        case "${ans:-y}" in
+          y|Y|"") ;;
+          p|P)    INSTALLATION_ID=$(pick_with_fzf) ;;
+          *)      echo "aborted" >&2; exit 1 ;;
+        esac
+      fi
+    else
+      echo "no log entries found; falling back to picker" >&2
+      INSTALLATION_ID=$(pick_with_fzf)
+    fi
+  fi
+fi
+
+if ! grep -qE "^${UUID_RE}$" <<<"$INSTALLATION_ID"; then
+  echo "error: invalid installation ID: $INSTALLATION_ID" >&2
+  exit 2
+fi
+
+# --- Resolve output path: follow symlink so we write the real file ---
+if [[ -L "$OUTPUT" ]]; then
+  resolved=$(readlink "$OUTPUT")
+  [[ "$resolved" != /* ]] && resolved="$(dirname "$OUTPUT")/$resolved"
+  OUTPUT="$resolved"
+fi
+mkdir -p "$(dirname "$OUTPUT")"
+
+# --- Create the license ---
+echo "creating dev license:" >&2
+echo "  installation id: $INSTALLATION_ID" >&2
+echo "  output:          $OUTPUT" >&2
+cd "$LAKEFS_ENTERPRISE_DIR"
+exec ./license create --dev \
+  --installation-id "$INSTALLATION_ID" \
+  --output-file "$OUTPUT"

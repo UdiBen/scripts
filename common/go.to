@@ -3,6 +3,7 @@
 # Usage: source this file, or add `go.to` as a function in your shell
 
 go.to() {
+  local worktrees_root="$HOME/code/worktrees"
   local dirs=(
     "$HOME/code/treeverse/lakeFS"
     "$HOME/code/treeverse/lakeFS-Enterprise"
@@ -13,8 +14,16 @@ go.to() {
     "$HOME/git-custom-commands"
   )
 
-  # Build display list: short label → full path
+  if ! command -v fzf >/dev/null 2>&1; then
+    echo "error: fzf is required. Install with: brew install fzf" >&2
+    return 127
+  fi
+
+  # Build display list: short label → full path. "worktree" is a virtual
+  # entry that triggers a two-step drill-down under $worktrees_root.
   local entries=()
+  [[ -d "$worktrees_root" ]] && entries+=("worktree|__worktree__")
+  local d
   for d in "${dirs[@]}"; do
     [[ -d "$d" ]] || continue
     entries+=("$(basename "$d")|$d")
@@ -23,11 +32,6 @@ go.to() {
   if (( ${#entries} == 0 )); then
     echo "No directories found" >&2
     return 1
-  fi
-
-  if ! command -v fzf >/dev/null 2>&1; then
-    echo "error: fzf is required. Install with: brew install fzf" >&2
-    return 127
   fi
 
   local selection
@@ -39,6 +43,25 @@ go.to() {
 
   local target
   target=$(echo "$selection" | awk '{print $NF}')
+
+  if [[ "$target" == "__worktree__" ]]; then
+    local repo
+    repo=$(find "$worktrees_root" -mindepth 1 -maxdepth 1 -type d \
+      | fzf --exact --prompt="Worktree repo: " --height=~50% --reverse \
+            --with-nth=-1 --delimiter=/) || {
+      echo "No repo selected" >&2
+      return 1
+    }
+
+    local wt
+    wt=$(find "$repo" -mindepth 1 -maxdepth 1 -type d \
+      | fzf --exact --prompt="Worktree: " --height=~50% --reverse \
+            --with-nth=-1 --delimiter=/) || {
+      echo "No worktree selected" >&2
+      return 1
+    }
+    target="$wt"
+  fi
 
   cd "$target" && echo "→ $target"
 }

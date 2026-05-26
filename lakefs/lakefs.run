@@ -2,7 +2,7 @@
 # Description: Run lakeFS locally in various modes (quickstart, custom config, webui hot reload)
 set -euo pipefail
 
-LAKEFS_REPO_DIR="${LAKEFS_REPO_DIR:-$HOME/code/treeverse/lakefs}"
+LAKEFS_REPO_DIR="$(pwd)"
 LAKEFS_CONFIG_DIR="${HOME}/code/treeverse/config/lakefs"
 STATE_DIR="$HOME/.config/lakefs-run"
 
@@ -11,16 +11,16 @@ usage() {
 Usage:
   lakefs.run [-h|--help]
 
+Run from the root of a lakeFS repo (or worktree). The current directory
+is used as the repo root.
+
 Interactively select a mode to run lakeFS locally:
 
   Quickstart           Run with --quickstart (local DB, hardcoded creds)
   <config>.yaml        Run with a config from ~/code/treeverse/config/lakefs/
   WebUI hot reload     Vite dev server with optional backend
 
-Previous selections are remembered and pre-selected on next run.
-
-Environment:
-  LAKEFS_REPO_DIR    Path to the lakeFS repo (default: ~/code/treeverse/lakefs)
+Previous mode selection is remembered and pre-selected on next run.
 EOF
 }
 
@@ -36,11 +36,13 @@ if ! command -v fzf >/dev/null 2>&1; then
 fi
 
 # --- Validate repo ---
-if [[ ! -d "$LAKEFS_REPO_DIR/cmd/lakefs" ]]; then
-  echo "error: lakeFS repo not found at $LAKEFS_REPO_DIR (missing cmd/lakefs/)" >&2
-  echo "Set LAKEFS_REPO_DIR to the correct path" >&2
-  exit 1
-fi
+validate_repo() {
+  if [[ ! -d "$LAKEFS_REPO_DIR/cmd/lakefs" ]]; then
+    echo "error: not in a lakeFS repo root: $LAKEFS_REPO_DIR (missing cmd/lakefs/)" >&2
+    echo "cd into the root of a lakeFS or lakeFS-Enterprise checkout (or worktree) first." >&2
+    exit 1
+  fi
+}
 
 # --- fzf with last selection sorted to top ---
 fzf_with_last() {
@@ -98,16 +100,18 @@ build_modes() {
 
 # --- Run backend ---
 run_quickstart() {
+  validate_repo
   ensure_binary
-  echo "Starting lakeFS in quickstart mode..." >&2
+  echo "Starting lakeFS in quickstart mode ($LAKEFS_REPO_DIR)..." >&2
   cd "$LAKEFS_REPO_DIR"
   exec ./lakefs run --quickstart
 }
 
 run_with_config() {
   local config_path="$1"
+  validate_repo
   ensure_binary
-  echo "Starting lakeFS with config: $config_path" >&2
+  echo "Starting lakeFS with config: $config_path ($LAKEFS_REPO_DIR)" >&2
   cd "$LAKEFS_REPO_DIR"
   exec ./lakefs run -c "$config_path"
 }
@@ -118,6 +122,8 @@ run_webui() {
     echo "error: npm is required for WebUI hot reload. Install Node.js: brew install node" >&2
     exit 127
   fi
+
+  validate_repo
 
   # Auto-install node_modules if missing
   if [[ ! -d "$LAKEFS_REPO_DIR/webui/node_modules" ]]; then
@@ -149,7 +155,7 @@ run_webui() {
     ensure_binary
 
     # Start backend in background
-    echo "Starting lakeFS backend ($backend_mode)..." >&2
+    echo "Starting lakeFS backend ($backend_mode, $LAKEFS_REPO_DIR)..." >&2
     if [[ "$backend_mode" == "Quickstart" ]]; then
       (cd "$LAKEFS_REPO_DIR" && ./lakefs run --quickstart) &
     else

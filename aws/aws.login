@@ -119,7 +119,7 @@ fi
 if [[ -n "$mfa_token" ]]; then
   cmd+=(--mfa-token "$mfa_token")
 fi
-cmd+=(login --profile "$profile")
+cmd+=(login --force --profile "$profile")
 
 # Keep stdout clean (so command substitution / eval only sees exports).
 # Try with auto-generated token first; if it fails, retry without it (manual prompt)
@@ -130,7 +130,7 @@ if ! "${cmd[@]}" 1>&2; then
     if [[ -n "$region" ]]; then
       cmd+=(--region "$region")
     fi
-    cmd+=(login --profile "$profile")
+    cmd+=(login --force --profile "$profile")
     "${cmd[@]}" 1>&2
   else
     exit 1
