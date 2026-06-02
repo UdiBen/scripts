@@ -2,12 +2,10 @@
 # Description: Set up restish for admin and giam APIs with tokens and port-forwarding
 set -euo pipefail
 
-RESTISH_CONFIG="$HOME/Library/Application Support/restish/apis.json"
-API_DIR="$HOME/code/treeverse/cloud-controlplane/service/api"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/restish.lib.sh"
 
-# Service definitions
-ADMIN_SPEC="$API_DIR/admin.yml"
-GIAM_SPEC="$API_DIR/authorization.yml"
+ADMIN_SPEC="$CP_API_DIR/admin.yml"
+GIAM_SPEC="$CP_API_DIR/authorization.yml"
 
 LOCAL_MODE=false
 if [[ ${1:-} == "--local" ]]; then
@@ -48,33 +46,10 @@ else
   GIAM_PORT=8085
 fi
 
-# Check for jq
 if ! command -v jq >/dev/null 2>&1; then
   echo "error: jq is required. Install with: brew install jq" >&2
   exit 127
 fi
-
-# fzf with last selection sorted to the top of the list
-# Usage: echo "$items" | fzf_with_last <last_value> <prompt> [prefix]
-#   If "prefix" is passed, match lines starting with <last_value> instead of exact match
-fzf_with_last() {
-  local last="$1" prompt="$2" match_mode="${3:-exact}"
-  local items
-  items=$(cat)
-  if [[ -n "$last" ]]; then
-    local matched rest
-    if [[ "$match_mode" == "prefix" ]]; then
-      matched=$(echo "$items" | grep "^${last}" | head -1) || true
-    else
-      matched=$(echo "$items" | grep -xF "$last" | head -1) || true
-    fi
-    if [[ -n "$matched" ]]; then
-      rest=$(echo "$items" | grep -vxF "$matched")
-      items="${matched}"$'\n'"${rest}"
-    fi
-  fi
-  echo "$items" | fzf --exact --prompt="$prompt" --height=~50% --reverse
-}
 
 # --- Load previous selections ---
 STATE_FILE="$HOME/.config/restish-prepare/last"
@@ -85,63 +60,22 @@ if [[ -f "$STATE_FILE" ]]; then
   LAST_ORG=$(sed -n '2p' "$STATE_FILE")
 fi
 
-# Detect namespace
-CP_NAMESPACES=$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep control-plane) || true
-if [[ -z "$CP_NAMESPACES" ]]; then
-  echo "error: no control-plane namespace found in current kubectl context" >&2
-  exit 2
-fi
-
-NS_COUNT=$(echo "$CP_NAMESPACES" | wc -l | tr -d ' ')
-if [[ "$NS_COUNT" -eq 1 ]]; then
-  NAMESPACE="$CP_NAMESPACES"
-else
-  NAMESPACE=$(echo "$CP_NAMESPACES" | fzf_with_last "$LAST_NAMESPACE" "Select namespace: ") || {
-    echo "error: no namespace selected" >&2
-    exit 1
-  }
-fi
+NAMESPACE=$(cp_detect_namespace "$LAST_NAMESPACE") || exit $?
 echo "Namespace: $NAMESPACE" >&2
 
 if [[ "$LOCAL_MODE" == true ]]; then
   echo "Local mode: expecting services on ports $ADMIN_PORT (admin) and $GIAM_PORT (giam)" >&2
 else
-  # Start port-forwarding
   echo "Starting port-forwards..." >&2
-
-  start_port_forward() {
-    local svc="$1" port="$2"
-
-    # Kill existing process on this port
-    if lsof -ti :"$port" >/dev/null 2>&1; then
-      kill $(lsof -ti :"$port") 2>/dev/null
-      sleep 0.5
-    fi
-
-    kubectl port-forward "svc/$svc" "$port:80" -n "$NAMESPACE" >/dev/null 2>&1 &
-    echo "  $svc -> localhost:$port (pid $!)" >&2
-  }
-
-  start_port_forward "$ADMIN_SVC" "$ADMIN_PORT"
-  start_port_forward "$GIAM_SVC" "$GIAM_PORT"
+  cp_start_port_forward "$ADMIN_SVC" "$ADMIN_PORT" "$NAMESPACE"
+  cp_start_port_forward "$GIAM_SVC" "$GIAM_PORT" "$NAMESPACE"
 fi
 
-# Wait for admin to be ready
 echo "Waiting for admin service..." >&2
-for i in $(seq 1 15); do
-  if curl -sf "http://localhost:${ADMIN_PORT}/_health" >/dev/null 2>&1; then
-    break
-  fi
-  if [[ $i -eq 15 ]]; then
-    echo "error: admin service not ready after 15s" >&2
-    exit 3
-  fi
-  sleep 1
-done
+cp_wait_health "$ADMIN_PORT" 15 || exit 3
 
 # Generate tokens
 echo "Generating tokens..." >&2
-
 ADMIN_TOKEN=$(CONTROLPLANE_NAMESPACE="$NAMESPACE" create.api.token superadmin) || {
   echo "error: failed to generate admin token" >&2
   exit 2
@@ -159,7 +93,7 @@ elif [[ "${ORG_COUNT:-0}" -gt 1 ]]; then
     echo "error: fzf is required for org selection. Install with: brew install fzf" >&2
     exit 127
   fi
-  ORG_ID=$(echo "$ORGS_JSON" | jq -r '.results[] | "\(.id)\t\(.name)"' | \
+  ORG_ID=$(echo "$ORGS_JSON" | jq -r '.results[] | "\(.id)\t\(.name)"' |
     fzf_with_last "$LAST_ORG" "Select organization: " prefix | cut -f1) || {
     echo "error: no organization selected" >&2
     exit 1
@@ -181,54 +115,15 @@ fi
 
 # --- Save selections ---
 mkdir -p "$(dirname "$STATE_FILE")"
-printf '%s\n%s\n' "$NAMESPACE" "${ORG_ID:-}" > "$STATE_FILE"
+printf '%s\n%s\n' "$NAMESPACE" "${ORG_ID:-}" >"$STATE_FILE"
 
-# Build restish config
+# Build restish config (preserves other entries such as lakefs)
 echo "Updating restish config..." >&2
+cp_restish_set_api admin "http://localhost:${ADMIN_PORT}/api/v1" "$ADMIN_TOKEN" "$ADMIN_SPEC"
+cp_restish_set_api giam "http://localhost:${GIAM_PORT}/api/v1" "${GIAM_TOKEN:-placeholder}" "$GIAM_SPEC"
 
-CONFIG=$(jq -n \
-  --arg admin_token "Bearer $ADMIN_TOKEN" \
-  --arg admin_spec "$ADMIN_SPEC" \
-  --arg admin_base "http://localhost:${ADMIN_PORT}/api/v1" \
-  --arg giam_token "Bearer ${GIAM_TOKEN:-placeholder}" \
-  --arg giam_spec "$GIAM_SPEC" \
-  --arg giam_base "http://localhost:${GIAM_PORT}/api/v1" \
-  --arg schema "https://rest.sh/schemas/apis.json" \
-  '{
-    "$schema": $schema,
-    "admin": {
-      "base": $admin_base,
-      "spec_files": [$admin_spec],
-      "profiles": {
-        "default": {
-          "headers": { "authorization": $admin_token },
-          "auth": { "name": "" }
-        }
-      }
-    },
-    "giam": {
-      "base": $giam_base,
-      "spec_files": [$giam_spec],
-      "profiles": {
-        "default": {
-          "headers": { "authorization": $giam_token },
-          "auth": { "name": "" }
-        }
-      }
-    }
-  }')
-
-# Preserve any existing entries (like lakefs) and merge
-if [[ -f "$RESTISH_CONFIG" ]]; then
-  EXISTING=$(cat "$RESTISH_CONFIG")
-  CONFIG=$(echo "$EXISTING" | jq --argjson new "$CONFIG" '. * $new')
-fi
-
-echo "$CONFIG" > "$RESTISH_CONFIG"
-
-# Clear restish cache
 echo "Clearing restish cache..." >&2
-rm -rf "$HOME/Library/Caches/restish/"*
+rm -rf "$HOME/Library/Caches/restish/"* 2>/dev/null || true
 
 echo "" >&2
 echo "Done. Usage:" >&2

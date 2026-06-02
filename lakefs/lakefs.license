@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+#
+# lakefs.license — pick a lakeFS Cloud installation via fzf, fetch its
+# Enterprise license token, decode the JWT, and show its details.
+#
+# The license is per-installation (org + region), fetched through the
+# control-plane `admin` API via restish. The admin port-forward + token are
+# set up automatically (see cp_ensure_admin in restish.lib.sh); you only need
+# cluster access first: aws.login && kube.connect.
+#
+# Usage: lakefs.license
+
+set -uo pipefail
+
+API=admin
+
+die() { echo "lakefs.license: $*" >&2; exit 1; }
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/restish.lib.sh"
+
+for c in restish jq fzf python3 curl kubectl; do
+  command -v "$c" >/dev/null 2>&1 || die "missing dependency: $c"
+done
+
+# Ensure the admin API is reachable (port-forward + token), set up on demand.
+cp_ensure_admin || die "could not set up admin API access (see errors above)"
+
+# --- pick organization -------------------------------------------------------
+orgs=$(restish "$API" list-organizations-v2 -q amount=1000 -o json 2>&1)
+if ! jq -e '.results' >/dev/null 2>&1 <<<"$orgs"; then
+  echo "$orgs" | head -3 >&2
+  die "could not list organizations"
+fi
+
+org_line=$(jq -r '.results[] | "\(.name // .id)\t\(.id)"' <<<"$orgs" \
+  | sort | fzf --with-nth=1 --delimiter='\t' --prompt='org> ' --height=40% --reverse)
+[ -n "$org_line" ] || exit 1
+org_name=${org_line%%$'\t'*}
+org_id=${org_line##*$'\t'}
+
+# --- pick installation (region/cloud) ---------------------------------------
+insts=$(restish "$API" list-organization-installations "$org_id" -o json 2>&1)
+jq -e '.results' >/dev/null 2>&1 <<<"$insts" || die "could not list installations for $org_name"
+
+count=$(jq '.results | length' <<<"$insts")
+[ "$count" -gt 0 ] || die "no installations for $org_name"
+
+if [ "$count" -eq 1 ]; then
+  inst_line=$(jq -r '.results[0] | "\(.region)\t\(.cloud)\t\(.installation_id)"' <<<"$insts")
+else
+  inst_line=$(jq -r '.results[] | "\(.region)\t\(.cloud)\t\(.installation_id)"' <<<"$insts" \
+    | sort | fzf --with-nth=1,2 --delimiter='\t' --prompt='region> ' --height=40% --reverse)
+fi
+[ -n "$inst_line" ] || exit 1
+region=$(cut -f1 <<<"$inst_line")
+cloud=$(cut -f2 <<<"$inst_line")
+inst_id=$(cut -f3 <<<"$inst_line")
+
+# --- fetch license token -----------------------------------------------------
+rec=$(restish "$API" get-organization-installation "$org_id" "$inst_id" -o json 2>&1)
+token=$(jq -r '.license_token // empty' <<<"$rec")
+[ -n "$token" ] || die "no license_token on installation $inst_id ($org_name/$region)"
+
+# --- decode & display --------------------------------------------------------
+ORG="$org_name" REGION="$region" CLOUD="$cloud" INST="$inst_id" TOKEN="$token" python3 <<'PY'
+import os, sys, json, base64, time, datetime as dt
+
+def b64url(seg):
+    seg += "=" * (-len(seg) % 4)
+    return base64.urlsafe_b64decode(seg)
+
+tok = os.environ["TOKEN"].strip()
+parts = tok.split(".")
+if len(parts) < 2:
+    sys.exit("license_token is not a JWT: %s..." % tok[:40])
+
+header = json.loads(b64url(parts[0]))
+claims = json.loads(b64url(parts[1]))
+now = int(time.time())
+
+def fmt(ts):
+    if ts is None:
+        return "n/a"
+    u = dt.datetime.fromtimestamp(ts, dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    l = dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M local")
+    return f"{u}  /  {l}"
+
+exp, iat, nbf = claims.get("exp"), claims.get("iat"), claims.get("nbf")
+
+print("=" * 64)
+print(f"Org / Installation : {os.environ['ORG']} / {os.environ['REGION']} ({os.environ['CLOUD']})")
+print(f"Installation ID    : {os.environ['INST']}")
+print(f"Algorithm          : {header.get('alg')}")
+print(f"Issued    (iat)    : {fmt(iat)}")
+if nbf:
+    print(f"Not before(nbf)    : {fmt(nbf)}")
+print(f"Expires   (exp)    : {fmt(exp)}")
+if exp is not None:
+    if exp < now:
+        d = now - exp
+        print(f"Status             : EXPIRED  ({d/3600:.1f}h / {d/86400:.1f}d ago)")
+    else:
+        d = exp - now
+        print(f"Status             : valid    ({d/3600:.1f}h / {d/86400:.1f}d left)")
+print("=" * 64)
+print("Full claims:")
+print(json.dumps(claims, indent=2, sort_keys=True))
+PY
