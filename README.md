@@ -79,7 +79,7 @@ This makes all scripts callable by name from anywhere.
 
 - **aws.login** - Login to AWS profile and export credentials (auto-generates MFA token)
 - **aws.secret** - Retrieve AWS secrets with interactive profile selection
-- **kube.connect** - Update kubeconfig for an EKS cluster with interactive selection
+- **kube.connect** - Update kubeconfig for an EKS cluster (uses active AWS_PROFILE/AWS_REGION when set, interactive selection otherwise)
 - **kube.logs** - Tail logs of Kubernetes pods/jobs using stern (interactive selection, follow or dump)
 
 ### lakefs/
