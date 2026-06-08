@@ -96,6 +96,7 @@ This makes all scripts callable by name from anywhere.
 - **generate.mfa.token** - Generate a JumpCloud MFA token, copy to clipboard
 - **add.alias** - Add a new alias to ~/.aliases and reload .zshrc
 - **kill.process** - Kill a process interactively using fzf (optional grep filter)
+- **share.password** - Share a password via One-Time Secret and print a single-use link
 
 ### Root
 
@@ -225,7 +226,8 @@ All scripts follow these conventions:
 └── common/
     ├── generate.mfa.token # MFA token generation
     ├── add.alias          # Alias management
-    └── kill.process       # Interactive process killer
+    ├── kill.process       # Interactive process killer
+    └── share.password     # One-Time Secret password sharing
 ```
 
 ## Troubleshooting
